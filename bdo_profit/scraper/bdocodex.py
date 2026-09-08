@@ -188,3 +188,14 @@ def scrape_cooking_recipes(session: requests.Session) -> list[ConversionEdge]:
         if (i + 1) % 25 == 0:
             print(f"  scraped {i + 1}/{len(rows)} cooking recipes...")
     return edges
+
+
+def scrape_all(session: requests.Session | None = None) -> list[ConversionEdge]:
+    session = session or requests.Session()
+    print("Scraping processing recipes (Chopping/Heating/Grinding/Filtering/Drying/Shaking)...")
+    edges = scrape_processing_recipes(session)
+    print(f"  {len(edges)} processing recipes scraped.")
+    print("Scraping cooking recipes (this fetches one detail page per recipe, ~2-3 minutes)...")
+    cooking_edges = scrape_cooking_recipes(session)
+    print(f"  {len(cooking_edges)} cooking recipes scraped.")
+    return edges + cooking_edges
