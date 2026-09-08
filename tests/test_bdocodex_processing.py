@@ -1,13 +1,18 @@
 import json
 from pathlib import Path
 
-from bdo_profit.scraper.bdocodex import parse_mrecipe_row
+from bdo_profit.scraper.bdocodex import PROCESS_TYPES, parse_mrecipe_row
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mrecipes_heating_sample.json"
+MALCHEMY_FIXTURE = Path(__file__).parent / "fixtures" / "mrecipes_malchemy_sample.json"
 
 
 def _rows():
     return json.loads(FIXTURE.read_text())["aaData"]
+
+
+def test_process_types_includes_simple_alchemy():
+    assert PROCESS_TYPES["malchemy"] == "Simple Alchemy"
 
 
 def test_parse_iron_ore_heating_row():
@@ -38,6 +43,20 @@ def test_parse_row_with_single_output_has_no_bonus():
     edge = parse_mrecipe_row(row)
     assert edge.name == "Iron Ingot"
     assert edge.bonus_outputs == ()
+
+
+def test_parse_simple_alchemy_row_handles_multiple_inputs():
+    # Simple Alchemy recipes (unlike Heating/Chopping/etc) commonly take more
+    # than one input item -- confirms parse_mrecipe_row was never actually
+    # restricted to single-input, it just hadn't been exercised with >1 before.
+    row = json.loads(MALCHEMY_FIXTURE.read_text())["aaData"][0]
+    edge = parse_mrecipe_row(row)
+    assert edge.recipe_id == 561
+    assert edge.name == "WON Magic Crystal - Harphia"
+    assert edge.process_type == "Simple Alchemy"
+    assert edge.inputs == ((15628, 1.0), (4918, 10.0), (4917, 1.0))
+    assert edge.base_outputs[0].item_id == 15803
+    assert {b.item_id for b in edge.bonus_outputs} == {15802, 15801}
 
 
 def test_scrape_processing_recipes_skips_malformed_row_with_warning(capsys):

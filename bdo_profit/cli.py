@@ -20,6 +20,7 @@ CATEGORY_PROCESS_TYPES = {
     "ore": {"Heating"},
     "wood": {"Chopping"},
     "cooking": {"Cooking"},
+    "alchemy": {"Alchemy", "Simple Alchemy"},
 }
 
 DEFAULT_CACHE_PATH = Path("data/recipes_cache.json")
@@ -31,7 +32,9 @@ DEFAULT_PRICE_CACHE_TTL = 3600.0
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="bdo_profit")
-    parser.add_argument("--category", choices=["ore", "wood", "cooking", "all"], default="all")
+    parser.add_argument(
+        "--category", choices=["ore", "wood", "cooking", "alchemy", "all"], default="all"
+    )
     parser.add_argument("--top", type=int, default=20)
     parser.add_argument("--refresh-recipes", action="store_true")
     parser.add_argument("--csv", type=Path, default=None)

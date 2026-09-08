@@ -1,5 +1,4 @@
 import json
-import re
 import time
 
 import requests
@@ -16,10 +15,8 @@ PROCESS_TYPES = {
     "dry": "Drying",
     "thinning": "Filtering",
     "shake": "Shaking",
+    "malchemy": "Simple Alchemy",
 }
-
-_ICON_ID_RE = re.compile(r"/(\d+)(?:_\d+)?\.webp")
-
 
 def fetch_mrecipes_json(process_slug: str, session: requests.Session) -> list[list]:
     resp = session.get(
@@ -53,23 +50,33 @@ def _extract_item_entries(cell_html: str) -> list[tuple[int, float, float]]:
     return entries
 
 
-def _primary_output_item_id(icon_cell_html: str) -> int | None:
-    match = _ICON_ID_RE.search(icon_cell_html)
-    return int(match.group(1)) if match else None
-
-
 def _primary_and_bonus_outputs(
-    icon_cell_html: str, output_cell_html: str
+    output_cell_html: str,
 ) -> tuple[YieldRange | None, list[BonusOutput]]:
-    primary_id = _primary_output_item_id(icon_cell_html)
+    """The first item listed in the output cell is the guaranteed primary
+    product; any further items are bonus/alternate outputs with an unknown
+    proc rate.
+
+    Earlier versions matched the recipe's icon-cell image filename against
+    the output items instead, on the assumption the icon's embedded number
+    is the primary item's id. That assumption is wrong for a meaningful
+    fraction of real recipes (icon asset numbering and item id diverge --
+    confirmed on real bdocodex data: ~18% of multi-output Simple Alchemy
+    recipes, most of which matched nothing at all in the output cell and
+    silently lost their real primary output into bonus_outputs). Output
+    cell ordering has held as primary-first in every real recipe checked
+    across Processing, Cooking, and Alchemy, and needs no extra network
+    call to verify.
+    """
     entries = _extract_item_entries(output_cell_html)
-    primary: YieldRange | None = None
-    bonus: list[BonusOutput] = []
-    for item_id, qty_min, qty_max in entries:
-        if item_id == primary_id and primary is None:
-            primary = YieldRange(item_id, qty_min, qty_max)
-        else:
-            bonus.append(BonusOutput(item_id, qty_min, qty_max, chance=None))
+    if not entries:
+        return None, []
+    primary_id, primary_qmin, primary_qmax = entries[0]
+    primary = YieldRange(primary_id, primary_qmin, primary_qmax)
+    bonus = [
+        BonusOutput(item_id, qty_min, qty_max, chance=None)
+        for item_id, qty_min, qty_max in entries[1:]
+    ]
     return primary, bonus
 
 
@@ -79,7 +86,7 @@ def parse_mrecipe_row(row: list) -> ConversionEdge:
     process_type = row[3]
     mastery_required = row[4]["sort_value"]
     inputs = tuple((iid, qmin) for iid, qmin, _qmax in _extract_item_entries(row[6]))
-    primary, bonus = _primary_and_bonus_outputs(row[1], row[8])
+    primary, bonus = _primary_and_bonus_outputs(row[8])
     return ConversionEdge(
         recipe_id=recipe_id,
         name=name,
@@ -120,7 +127,7 @@ def fetch_recipes_json(recipe_type: str, session: requests.Session) -> list[list
 def parse_cooking_summary_row(row: list) -> dict:
     name = BeautifulSoup(row[2], "html.parser").select_one("b").get_text(strip=True)
     mastery_required = row[4]["sort_value"]
-    primary, bonus = _primary_and_bonus_outputs(row[1], row[8])
+    primary, bonus = _primary_and_bonus_outputs(row[8])
     return {
         "recipe_id": row[0],
         "name": name,
@@ -190,12 +197,60 @@ def scrape_cooking_recipes(session: requests.Session) -> list[ConversionEdge]:
     return edges
 
 
+def parse_alchemy_summary_row(row: list) -> dict:
+    name = BeautifulSoup(row[2], "html.parser").select_one("b").get_text(strip=True)
+    mastery_required = row[4]["sort_value"]
+    primary, bonus = _primary_and_bonus_outputs(row[8])
+    return {
+        "recipe_id": row[0],
+        "name": name,
+        "mastery_required": mastery_required,
+        "primary_output": primary,
+        "bonus_outputs": bonus,
+    }
+
+
+def build_alchemy_edge(
+    summary: dict, ingredients: tuple[tuple[int, float], ...]
+) -> ConversionEdge:
+    primary = summary["primary_output"]
+    return ConversionEdge(
+        recipe_id=summary["recipe_id"],
+        name=summary["name"],
+        process_type="Alchemy",
+        mastery_required=summary["mastery_required"],
+        inputs=ingredients,
+        base_outputs=(primary,) if primary else (),
+        bonus_outputs=tuple(summary["bonus_outputs"]),
+    )
+
+
+def scrape_alchemy_recipes(session: requests.Session) -> list[ConversionEdge]:
+    rows = fetch_recipes_json("alchemy", session)
+    edges = []
+    for i, row in enumerate(rows):
+        try:
+            summary = parse_alchemy_summary_row(row)
+            ingredients = fetch_recipe_ingredients(summary["recipe_id"], session)
+            edges.append(build_alchemy_edge(summary, ingredients))
+        except (AttributeError, IndexError, KeyError, ValueError, requests.RequestException) as exc:
+            recipe_id = row[0] if row else "?"
+            print(f"  WARNING: skipped alchemy recipe {recipe_id}: {exc}")
+        time.sleep(0.5)
+        if (i + 1) % 25 == 0:
+            print(f"  scraped {i + 1}/{len(rows)} alchemy recipes...")
+    return edges
+
+
 def scrape_all(session: requests.Session | None = None) -> list[ConversionEdge]:
     session = session or requests.Session()
-    print("Scraping processing recipes (Chopping/Heating/Grinding/Filtering/Drying/Shaking)...")
+    print("Scraping processing recipes (Chopping/Heating/Grinding/Filtering/Drying/Shaking/Simple Alchemy)...")
     edges = scrape_processing_recipes(session)
     print(f"  {len(edges)} processing recipes scraped.")
     print("Scraping cooking recipes (this fetches one detail page per recipe, ~2-3 minutes)...")
     cooking_edges = scrape_cooking_recipes(session)
     print(f"  {len(cooking_edges)} cooking recipes scraped.")
-    return edges + cooking_edges
+    print("Scraping alchemy recipes (this fetches one detail page per recipe)...")
+    alchemy_edges = scrape_alchemy_recipes(session)
+    print(f"  {len(alchemy_edges)} alchemy recipes scraped.")
+    return edges + cooking_edges + alchemy_edges

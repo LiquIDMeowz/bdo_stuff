@@ -334,6 +334,41 @@ def test_negative_category_hops_means_unbounded(tmp_path: Path):
     assert set(calls) == {6001, 6002, 6003}
 
 
+def test_alchemy_category_only_prices_alchemy_reachable_items(tmp_path: Path):
+    paths = _common_paths(tmp_path)
+    alchemy_edge = ConversionEdge(
+        recipe_id=1,
+        name="Elixir of Amity",
+        process_type="Alchemy",
+        mastery_required=11,
+        inputs=((6351, 1.0),),
+        base_outputs=(YieldRange(664, 1.0, 4.0),),
+    )
+    wood_edge = ConversionEdge(
+        recipe_id=2,
+        name="Plank",
+        process_type="Chopping",
+        mastery_required=0,
+        inputs=((5001, 5.0),),
+        base_outputs=(YieldRange(5051, 1.0, 4.0),),
+    )
+    calls: list[int] = []
+    fake_prices = {
+        6351: _snapshot(6351, "Legendary Beast's Blood", 1000.0),
+        664: _snapshot(664, "Elixir of Amity", 5000.0),
+        5001: _snapshot(5001, "Log", 100.0),
+        5051: _snapshot(5051, "Plank", 200.0),
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices, calls)), \
+         patch("bdo_profit.cli.scrape_all", return_value=[alchemy_edge, wood_edge]):
+        _run(paths, ["--category", "alchemy"])
+
+    assert set(calls) == {6351, 664}
+    assert 5001 not in calls
+    assert 5051 not in calls
+
+
 def test_output_includes_stock_and_trades_columns(tmp_path: Path, capsys):
     paths = _common_paths(tmp_path)
     fake_prices = {
