@@ -46,6 +46,13 @@ class MarketClient:
         if data is None:
             return cached  # stale fallback if we have one, else None
 
+        # Items with multiple enhancement levels come back as a list of per-sid
+        # objects even when a single sid is requested -- pick the one we asked for.
+        if isinstance(data, list):
+            if not data:
+                return cached
+            data = next((d for d in data if d.get("sid") == sub_id), data[0])
+
         snapshot = MarketSnapshot(
             item_id=item_id,
             sub_id=sub_id,
@@ -58,7 +65,7 @@ class MarketClient:
         self._cache[key] = snapshot
         return snapshot
 
-    def _get_with_retry(self, endpoint: str, params: dict) -> dict | None:
+    def _get_with_retry(self, endpoint: str, params: dict) -> dict | list | None:
         url = f"{ARSHA_BASE}/{self.region}/{endpoint}"
         for attempt in range(self.max_retries):
             self._respect_rate_limit()

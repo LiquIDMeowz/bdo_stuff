@@ -24,12 +24,21 @@ def load_mastery(path: Path) -> MasteryConfig:
 
 
 def load_npc_prices(path: Path) -> dict[int, float]:
-    raw = json.loads(path.read_text())
-    return {int(k): float(v) for k, v in raw.items()}
+    # These files are hand-edited; degrade gracefully rather than killing a run.
+    try:
+        raw = json.loads(path.read_text())
+        return {int(k): float(v) for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError, ValueError) as exc:
+        print(f"WARNING: could not load NPC prices from {path}: {exc}")
+        return {}
 
 
 def load_bonus_proc_rates(path: Path) -> dict[int, float]:
-    data = yaml.safe_load(path.read_text())
-    if not data:
+    try:
+        data = yaml.safe_load(path.read_text())
+        if not data:
+            return {}
+        return {int(k): float(v) for k, v in data.items()}
+    except (FileNotFoundError, yaml.YAMLError, AttributeError, ValueError) as exc:
+        print(f"WARNING: could not load bonus proc rates from {path}: {exc}")
         return {}
-    return {int(k): float(v) for k, v in data.items()}

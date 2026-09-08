@@ -21,7 +21,6 @@ CATEGORY_PROCESS_TYPES = {
 }
 
 DEFAULT_CACHE_PATH = Path("data/recipes_cache.json")
-DEFAULT_MASTERY_PATH = Path("config/mastery.yaml")
 DEFAULT_BONUS_PATH = Path("config/bonus_proc_rates.yaml")
 DEFAULT_NPC_PATH = Path("data/npc_prices.json")
 
@@ -34,7 +33,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", type=Path, default=None)
     parser.add_argument("--tax-rate", type=float, default=0.65)
     parser.add_argument("--cache-path", type=Path, default=DEFAULT_CACHE_PATH)
-    parser.add_argument("--mastery-file", type=Path, default=DEFAULT_MASTERY_PATH)
     parser.add_argument("--bonus-rates-path", type=Path, default=DEFAULT_BONUS_PATH)
     parser.add_argument("--npc-prices-path", type=Path, default=DEFAULT_NPC_PATH)
     return parser
@@ -59,11 +57,23 @@ def main(argv: list[str] | None = None) -> None:
     client = MarketClient()
     prices: dict[int, float] = {}
     names: dict[int, str] = {}
-    for item_id in all_item_ids(edges):
+    item_ids = sorted(all_item_ids(edges))
+    total = len(item_ids)
+    failed = 0
+    for i, item_id in enumerate(item_ids):
         snapshot = client.get_price(item_id)
         if snapshot:
             prices[item_id] = snapshot.price
             names[item_id] = snapshot.name
+        else:
+            failed += 1
+        if (i + 1) % 100 == 0:
+            print(f"  fetched {i + 1}/{total} prices ({failed} unavailable so far)...")
+    if failed:
+        print(
+            f"WARNING: {failed}/{total} item prices unavailable "
+            f"(API errors or no market data) -- affected items excluded from pricing"
+        )
 
     memo: dict[int, PathResult] = {}
     results = [
@@ -73,7 +83,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.category != "all":
         allowed = CATEGORY_PROCESS_TYPES[args.category]
-        results = [r for r in results if set(r.process_types) & allowed]
+        # "sell raw" results have no process types but are still valid answers
+        # under a category filter -- the point of the tool is comparing them.
+        results = [
+            r for r in results
+            if r.action == "sell_raw" or set(r.process_types) & allowed
+        ]
 
     results.sort(key=lambda r: r.value_per_unit, reverse=True)
     results = results[: args.top]

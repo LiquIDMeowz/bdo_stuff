@@ -40,3 +40,27 @@ def test_load_bonus_proc_rates_with_entries(tmp_path: Path):
     p.write_text("112: 0.1\n")
     rates = load_bonus_proc_rates(p)
     assert rates == {112: 0.1}
+
+
+def test_load_npc_prices_missing_file_warns_and_returns_empty(tmp_path: Path, capsys):
+    missing = tmp_path / "does_not_exist.json"
+    assert load_npc_prices(missing) == {}
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_load_bonus_proc_rates_missing_file_warns_and_returns_empty(tmp_path: Path, capsys):
+    missing = tmp_path / "does_not_exist.yaml"
+    assert load_bonus_proc_rates(missing) == {}
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_load_npc_prices_malformed_shape_returns_empty(tmp_path: Path):
+    p = tmp_path / "npc_prices.json"
+    p.write_text(json.dumps([1, 2, 3]))  # list, not a mapping
+    assert load_npc_prices(p) == {}
+
+
+def test_load_bonus_proc_rates_malformed_shape_returns_empty(tmp_path: Path):
+    p = tmp_path / "bonus_proc_rates.yaml"
+    p.write_text("- 112\n- 0.1\n")  # list, not a mapping
+    assert load_bonus_proc_rates(p) == {}

@@ -1,3 +1,5 @@
+import time
+
 from bdo_profit.models import BonusOutput, ConversionEdge, YieldRange
 from bdo_profit.profitability import (
     acquisition_cost,
@@ -159,3 +161,54 @@ def test_cyclic_graph_terminates_without_infinite_recursion():
     assert result_b is not None
     assert result_b.action == "sell_raw"
     assert result_b.value_per_unit == 13.0  # 20.0 * 0.65
+
+
+def test_large_cyclic_graph_ranks_quickly():
+    # A long cycle item_0 -> item_1 -> ... -> item_N -> item_0, plus a few
+    # branch edges so nodes have >1 outgoing option. The old DFS+memo approach
+    # blew up exponentially on structure like this; fixed-point relaxation
+    # must stay near-instant.
+    n = 80
+    ids = [9000 + i for i in range(n)]
+    edges = [
+        ConversionEdge(
+            recipe_id=i,
+            name=f"step_{i}",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((ids[i], 1.0),),
+            base_outputs=(YieldRange(ids[(i + 1) % n], 1.0, 1.0),),
+        )
+        for i in range(n)
+    ]
+    # Branch points: every 10th item can also skip ahead by 5, creating
+    # overlapping sub-cycles rather than one clean ring.
+    edges += [
+        ConversionEdge(
+            recipe_id=1000 + i,
+            name=f"skip_{i}",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((ids[i], 1.0),),
+            base_outputs=(YieldRange(ids[(i + 5) % n], 1.0, 1.0),),
+        )
+        for i in range(0, n, 10)
+    ]
+
+    edges_by_input = build_edges_by_input(edges)
+    prices = {iid: float(100 + (i * 7) % 53) for i, iid in enumerate(ids)}
+
+    memo: dict[int, object] = {}
+    start = time.time()
+    results = [
+        best_path_value(iid, edges_by_input, prices, {}, tax_rate=0.65, memo=memo)
+        for iid in ids
+    ]
+    elapsed = time.time() - start
+
+    assert elapsed < 5.0, f"ranking {n} cyclic items took {elapsed:.2f}s"
+    assert len(results) == n
+    # Every item can reach the ring's most valuable member, so nobody should
+    # end up valued below its own raw sale price.
+    for iid, r in zip(ids, results):
+        assert r.value_per_unit >= prices[iid] * 0.65 - 1e-9

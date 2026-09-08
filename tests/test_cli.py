@@ -55,3 +55,56 @@ def test_main_prints_ranked_table_and_writes_csv(tmp_path: Path, capsys):
     assert "Iron Ore" in captured.out
     assert csv_path.exists()
     assert "Iron Ore" in csv_path.read_text()
+
+
+def test_sell_raw_result_survives_category_filter(tmp_path: Path, capsys):
+    """A raw material whose best action is 'sell raw' must not be filtered out.
+
+    The edge here is process_type "Heating", i.e. in-category for --category ore,
+    so the item would qualify if processing won. Pricing makes the raw sale the
+    better play instead -- and that answer still has to reach the output.
+    """
+    csv_path = tmp_path / "out.csv"
+    npc_path = tmp_path / "npc.json"
+    npc_path.write_text("{}")
+    bonus_path = tmp_path / "bonus.yaml"
+    bonus_path.write_text("")
+    cache_path = tmp_path / "cache.json"
+
+    # Ore is valuable, the smelted product is near-worthless -> sell raw wins.
+    fake_prices = {
+        4001: {"name": "Iron Ore", "price": 1_000_000.0},
+        4051: {"name": "Melted Iron Shard", "price": 1.0},
+    }
+
+    class FakeSnapshot:
+        def __init__(self, name, price):
+            self.name = name
+            self.price = price
+
+    class FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def get_price(self, item_id, sub_id=0):
+            data = fake_prices.get(item_id)
+            return FakeSnapshot(data["name"], data["price"]) if data else None
+
+    with patch("bdo_profit.cli.MarketClient", FakeClient), \
+         patch("bdo_profit.cli.scrape_all", return_value=FAKE_EDGES):
+        main([
+            "--refresh-recipes",
+            "--category", "ore",
+            "--cache-path", str(cache_path),
+            "--npc-prices-path", str(npc_path),
+            "--bonus-rates-path", str(bonus_path),
+            "--csv", str(csv_path),
+            "--top", "5",
+        ])
+
+    captured = capsys.readouterr()
+    assert "Iron Ore" in captured.out
+    assert "sell_raw" in captured.out
+    csv_text = csv_path.read_text()
+    assert "Iron Ore" in csv_text
+    assert "sell_raw" in csv_text
