@@ -36,6 +36,58 @@ def all_item_ids(edges: list[ConversionEdge]) -> set[int]:
     return ids
 
 
+def category_reachable_items(
+    edges: list[ConversionEdge],
+    category_process_types: set[str],
+    max_hops: int | None = 2,
+) -> set[int]:
+    """Every item connected, within ``max_hops`` edges, to a matching-category edge.
+
+    Structural only -- no prices involved, so this is stable regardless of what
+    turns out to be the "best" chain once real prices are known. Used to scope
+    price-fetching to a `--category` filter instead of pricing the whole graph.
+
+    ``max_hops=None`` means unbounded (the full connected component). In
+    practice a handful of common staple ingredients (Water, Squid, Corn
+    Dough...) sit in a huge number of unrelated recipes, so unbounded closure
+    tends to pull in most of the graph regardless of category -- a small hop
+    bound keeps this scoping actually useful while still covering realistic
+    multi-hop chains within the requested category.
+    """
+    adjacency: dict[int, set[int]] = {}
+    for edge in edges:
+        members = (
+            [iid for iid, _ in edge.inputs]
+            + [o.item_id for o in edge.base_outputs]
+            + [b.item_id for b in edge.bonus_outputs]
+        )
+        for a in members:
+            for b in members:
+                if a != b:
+                    adjacency.setdefault(a, set()).add(b)
+
+    seed: set[int] = set()
+    for edge in edges:
+        if edge.process_type in category_process_types:
+            seed.update(iid for iid, _ in edge.inputs)
+            seed.update(o.item_id for o in edge.base_outputs)
+            seed.update(b.item_id for b in edge.bonus_outputs)
+
+    visited = set(seed)
+    frontier = list(seed)
+    hops = 0
+    while frontier and (max_hops is None or hops < max_hops):
+        hops += 1
+        next_frontier = []
+        for item in frontier:
+            for neighbor in adjacency.get(item, ()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    next_frontier.append(neighbor)
+        frontier = next_frontier
+    return visited
+
+
 def acquisition_cost(
     item_id: int, prices: dict[int, float], npc_prices: dict[int, float]
 ) -> float:

@@ -7,6 +7,7 @@ from bdo_profit.profitability import (
     apply_bonus_rate_overrides,
     best_path_value,
     build_edges_by_input,
+    category_reachable_items,
     identify_raw_materials,
 )
 
@@ -45,6 +46,101 @@ def test_acquisition_cost_prefers_cheaper_of_market_and_npc():
     prices = {5000: 20.0}
     npc = {5000: 14.0}
     assert acquisition_cost(5000, prices, npc) == 14.0
+
+
+# Two disjoint clusters plus a multi-hop chain that touches Heating only on its
+# second hop, to prove reachability follows chains rather than first-hop type.
+CHOP_ONLY_EDGE = ConversionEdge(
+    recipe_id=101,
+    name="Chopped Thing",
+    process_type="Chopping",
+    mastery_required=0,
+    inputs=((1001, 1.0),),
+    base_outputs=(YieldRange(1002, 1.0, 1.0),),
+)
+HEAT_ONLY_EDGE = ConversionEdge(
+    recipe_id=102,
+    name="Heated Thing",
+    process_type="Heating",
+    mastery_required=0,
+    inputs=((2001, 1.0),),
+    base_outputs=(YieldRange(2002, 1.0, 1.0),),
+)
+GRIND_THEN_HEAT_FIRST_HOP = ConversionEdge(
+    recipe_id=103,
+    name="Ground Thing",
+    process_type="Grinding",
+    mastery_required=0,
+    inputs=((3001, 1.0),),
+    base_outputs=(YieldRange(3002, 1.0, 1.0),),
+)
+GRIND_THEN_HEAT_SECOND_HOP = ConversionEdge(
+    recipe_id=104,
+    name="Then Heated",
+    process_type="Heating",
+    mastery_required=0,
+    inputs=((3002, 1.0),),
+    base_outputs=(YieldRange(3003, 1.0, 1.0),),
+)
+
+
+def test_category_reachable_items_includes_direct_matches():
+    reachable = category_reachable_items([HEAT_ONLY_EDGE], {"Heating"})
+    assert reachable == {2001, 2002}
+
+
+def test_category_reachable_items_excludes_unrelated_cluster():
+    reachable = category_reachable_items([CHOP_ONLY_EDGE, HEAT_ONLY_EDGE], {"Heating"})
+    assert reachable == {2001, 2002}
+    assert 1001 not in reachable
+    assert 1002 not in reachable
+
+
+def test_category_reachable_items_follows_multi_hop_chains():
+    edges = [GRIND_THEN_HEAT_FIRST_HOP, GRIND_THEN_HEAT_SECOND_HOP]
+    reachable = category_reachable_items(edges, {"Heating"})
+    # 3001 is only ever a Grinding input, but its chain reaches a Heating edge
+    # two hops later, so it must still be included.
+    assert reachable == {3001, 3002, 3003}
+
+
+# A long linear chain (item 4000 -> 4001 -> ... -> 4006) where only the LAST
+# edge is Heating, to test that max_hops actually bounds how far reachability
+# extends -- distinct from the multi-hop test above, which is short enough to
+# always be fully reachable regardless of any reasonable bound.
+_LONG_CHAIN_EDGES = [
+    ConversionEdge(
+        recipe_id=200 + i,
+        name=f"Step {i}",
+        process_type="Grinding",
+        mastery_required=0,
+        inputs=((4000 + i, 1.0),),
+        base_outputs=(YieldRange(4001 + i, 1.0, 1.0),),
+    )
+    for i in range(6)
+]
+_LONG_CHAIN_EDGES[-1] = ConversionEdge(
+    recipe_id=205,
+    name="Step 5",
+    process_type="Heating",
+    mastery_required=0,
+    inputs=((4005, 1.0),),
+    base_outputs=(YieldRange(4006, 1.0, 1.0),),
+)
+
+
+def test_category_reachable_items_unbounded_reaches_the_whole_chain():
+    reachable = category_reachable_items(_LONG_CHAIN_EDGES, {"Heating"}, max_hops=None)
+    assert reachable == {4000, 4001, 4002, 4003, 4004, 4005, 4006}
+
+
+def test_category_reachable_items_respects_max_hops():
+    # Seed is {4005, 4006} (the Heating edge's own members). Within 2 hops
+    # that reaches back to 4003, but not all the way to 4000.
+    reachable = category_reachable_items(_LONG_CHAIN_EDGES, {"Heating"}, max_hops=2)
+    assert reachable == {4003, 4004, 4005, 4006}
+    assert 4000 not in reachable
+    assert 4002 not in reachable
 
 
 def test_acquisition_cost_falls_back_to_whichever_exists():

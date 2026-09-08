@@ -20,6 +20,7 @@ def test_get_price_parses_snapshot():
         "sid": 0,
         "basePrice": 885000,
         "currentStock": 486322,
+        "totalTrades": 2567382461,
         "lastSoldPrice": 820000,
     }
     with patch.object(client._session, "get", return_value=_mock_response(payload)) as get:
@@ -27,10 +28,19 @@ def test_get_price_parses_snapshot():
     assert snap.name == "Caphras Stone"
     assert snap.price == 885000
     assert snap.current_stock == 486322
+    assert snap.total_trades == 2567382461
     get.assert_called_once()
     call_url = get.call_args[0][0]
     assert "GetWorldMarketSubList" in call_url
     assert get.call_args[1]["params"]["id"] == 721003
+
+
+def test_get_price_defaults_total_trades_to_zero_when_missing():
+    client = MarketClient(min_interval=0)
+    payload = {"name": "X", "id": 1, "sid": 0, "basePrice": 100, "currentStock": 1, "lastSoldPrice": 100}
+    with patch.object(client._session, "get", return_value=_mock_response(payload)):
+        snap = client.get_price(1)
+    assert snap.total_trades == 0
 
 
 def test_get_price_caches_within_ttl():

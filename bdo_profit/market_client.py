@@ -13,6 +13,7 @@ class MarketSnapshot:
     name: str
     price: float
     current_stock: int
+    total_trades: int
     last_sold_price: float
     fetched_at: float
 
@@ -59,6 +60,7 @@ class MarketClient:
             name=str(data.get("name", f"Item {item_id}")),
             price=float(data.get("basePrice", 0) or 0),
             current_stock=int(data.get("currentStock", 0) or 0),
+            total_trades=int(data.get("totalTrades", 0) or 0),
             last_sold_price=float(data.get("lastSoldPrice", 0) or 0),
             fetched_at=now,
         )
