@@ -1,0 +1,16 @@
+gathering:
+  mastery: 375
+  level: "Artisan 5"
+processing:
+  mastery: 385
+  level: "Artisan 7"
+  subskills:
+    shaking: 940
+    grinding: 940
+    chopping: 940
+    drying: 940
+    filtering: 940
+    heating: 940
+cooking:
+  mastery: 1040
+  level: "Master 7"

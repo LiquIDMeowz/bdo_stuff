@@ -1,0 +1,3 @@
+# Known bonus/tier-skip proc rates, keyed by bdocodex recipe id, as a fraction (e.g. 0.1 = 10%).
+# Empty by default -- rates are unknown until observed in-game. Add entries here to have
+# that recipe's bonus output included in the core ranked value instead of shown as upside-only.
