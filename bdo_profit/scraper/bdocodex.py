@@ -103,3 +103,88 @@ def scrape_processing_recipes(session: requests.Session) -> list[ConversionEdge]
                 print(f"  WARNING: skipped {slug} recipe {recipe_id}: {exc}")
         time.sleep(0.5)
     return edges
+
+
+def fetch_recipes_json(recipe_type: str, session: requests.Session) -> list[list]:
+    resp = session.get(
+        f"{BASE_URL}/query.php",
+        params={"a": "recipes", "type": recipe_type, "id": 1, "l": "us"},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    payload = json.loads(resp.text.lstrip("﻿"))
+    return payload["aaData"]
+
+
+def parse_cooking_summary_row(row: list) -> dict:
+    name = BeautifulSoup(row[2], "html.parser").select_one("b").get_text(strip=True)
+    mastery_required = row[4]["sort_value"]
+    primary, bonus = _primary_and_bonus_outputs(row[1], row[8])
+    return {
+        "recipe_id": row[0],
+        "name": name,
+        "mastery_required": mastery_required,
+        "primary_output": primary,
+        "bonus_outputs": bonus,
+    }
+
+
+def parse_recipe_detail_ingredients(html: str) -> tuple[tuple[int, float], ...]:
+    soup = BeautifulSoup(html, "html.parser")
+    label = soup.find(
+        "span", class_="yellow_text", string=lambda s: s and "Crafting Materials" in s
+    )
+    if label is None:
+        return ()
+    container = label.find_parent("td")
+    if container is None:
+        return ()
+    ingredients = []
+    for item_id, qty_min, _qty_max in _extract_item_entries(str(container)):
+        ingredients.append((item_id, qty_min))
+    return tuple(ingredients)
+
+
+def fetch_recipe_ingredients(
+    recipe_id: int, session: requests.Session
+) -> tuple[tuple[int, float], ...]:
+    resp = session.get(
+        f"{BASE_URL}/us/recipe/{recipe_id}/",
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return parse_recipe_detail_ingredients(resp.text)
+
+
+def build_cooking_edge(
+    summary: dict, ingredients: tuple[tuple[int, float], ...]
+) -> ConversionEdge:
+    primary = summary["primary_output"]
+    return ConversionEdge(
+        recipe_id=summary["recipe_id"],
+        name=summary["name"],
+        process_type="Cooking",
+        mastery_required=summary["mastery_required"],
+        inputs=ingredients,
+        base_outputs=(primary,) if primary else (),
+        bonus_outputs=tuple(summary["bonus_outputs"]),
+    )
+
+
+def scrape_cooking_recipes(session: requests.Session) -> list[ConversionEdge]:
+    rows = fetch_recipes_json("culinary", session)
+    edges = []
+    for i, row in enumerate(rows):
+        try:
+            summary = parse_cooking_summary_row(row)
+            ingredients = fetch_recipe_ingredients(summary["recipe_id"], session)
+            edges.append(build_cooking_edge(summary, ingredients))
+        except (AttributeError, IndexError, KeyError, ValueError, requests.RequestException) as exc:
+            recipe_id = row[0] if row else "?"
+            print(f"  WARNING: skipped cooking recipe {recipe_id}: {exc}")
+        time.sleep(0.5)
+        if (i + 1) % 25 == 0:
+            print(f"  scraped {i + 1}/{len(rows)} cooking recipes...")
+    return edges
