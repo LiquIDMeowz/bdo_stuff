@@ -1,6 +1,4 @@
-def main() -> None:
-    print("bdo_profit: not yet implemented (see Task 9)")
-
+from bdo_profit.cli import main
 
 if __name__ == "__main__":
     main()
