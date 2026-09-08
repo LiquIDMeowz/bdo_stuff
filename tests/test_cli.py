@@ -118,6 +118,51 @@ def test_sell_raw_result_survives_category_filter(tmp_path: Path, capsys):
     assert "sell_raw" in csv_text
 
 
+def test_price_cache_is_saved_incrementally_not_only_at_the_end(tmp_path: Path):
+    """If the process is killed mid-run (timeout, crash), prices fetched so
+    far must already be on disk -- not lost by only saving once at the end."""
+    paths = _common_paths(tmp_path)
+    edges = [
+        ConversionEdge(
+            recipe_id=i,
+            name=f"Step {i}",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((7000 + i, 1.0),),
+            base_outputs=(YieldRange(7100 + i, 1.0, 1.0),),
+        )
+        for i in range(60)
+    ]
+    fake_prices = {}
+    for i in range(60):
+        fake_prices[7000 + i] = _snapshot(7000 + i, f"Raw {i}", 100.0)
+        fake_prices[7100 + i] = _snapshot(7100 + i, f"Product {i}", 200.0)
+
+    class CrashingClient:
+        def __init__(self, *a, **kw):
+            self._calls = 0
+
+        def get_price(self, item_id, sub_id=0):
+            self._calls += 1
+            if self._calls > 55:
+                raise RuntimeError("simulated timeout/crash mid-run")
+            return fake_prices.get(item_id)
+
+    with patch("bdo_profit.cli.MarketClient", CrashingClient), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        try:
+            _run(paths)
+        except RuntimeError:
+            pass  # the simulated crash -- what matters is what's on disk already
+
+    from bdo_profit.price_cache import load_price_cache
+
+    saved = load_price_cache(paths["price_cache_path"])
+    # Some meaningful chunk of the 55 successful fetches must have survived
+    # to disk before the crash on call 56 -- not zero, not requiring all 120.
+    assert len(saved) >= 40
+
+
 def test_fresh_price_cache_entry_is_reused_without_refetching(tmp_path: Path, capsys):
     paths = _common_paths(tmp_path)
     save_price_cache(

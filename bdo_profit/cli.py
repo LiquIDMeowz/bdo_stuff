@@ -125,6 +125,11 @@ def main(argv: list[str] | None = None) -> None:
             trades[item_id] = snapshot.total_trades
         else:
             failed += 1
+        # Save incrementally, not only at the end -- a long run (thousands of
+        # rate-limited requests) can take hours, and a timeout/crash midway
+        # must not lose everything fetched so far.
+        if (i + 1) % 50 == 0:
+            price_cache.save_price_cache(disk_price_cache, args.price_cache_path)
         if (i + 1) % 100 == 0:
             print(
                 f"  processed {i + 1}/{total} prices "
