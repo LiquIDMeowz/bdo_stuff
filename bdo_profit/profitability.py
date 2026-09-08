@@ -80,7 +80,7 @@ def best_path_value(
     memo: dict[int, PathResult],
     visiting: frozenset[int] = frozenset(),
 ) -> PathResult:
-    if item_id in memo:
+    if item_id in memo and not visiting:
         return memo[item_id]
 
     sell_value = prices.get(item_id, 0.0) * tax_rate
@@ -95,7 +95,8 @@ def best_path_value(
             if candidate is not None and candidate.value_per_unit > best.value_per_unit:
                 best = candidate
 
-    memo[item_id] = best
+    if not visiting:
+        memo[item_id] = best
     return best
 
 
