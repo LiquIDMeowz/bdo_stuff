@@ -209,7 +209,14 @@ def _print_explain(result: ExplainResult, names: dict[int, str]) -> None:
 
     print(f"=== {name(result.item_id)} (id {result.item_id}) x {result.qty:,.1f} ===")
     print(f"Raw sell (net of tax):       {result.raw_sell_total:,.0f}")
-    print(f"Processed (net of tax):      {result.processed_total:,.0f}")
+    print(f"Processed (net of tax):      {result.processed_total:,.0f}  (average yield)")
+    print(f"Worst case (min yield):      {result.worst_case_total:,.0f}")
+    if result.steps and result.worst_case_total < result.raw_sell_total:
+        print(
+            "  ^ WARNING: at minimum yield, processing is worse than just selling raw -- "
+            "this chain is only profitable if you're consistently getting better than the "
+            "worst end of the yield range."
+        )
     if result.bonus_upside_total:
         print(f"Untracked bonus upside:     +{result.bonus_upside_total:,.0f} (unknown proc rate)")
 

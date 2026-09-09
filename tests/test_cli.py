@@ -197,6 +197,46 @@ def test_explain_excludes_a_chain_that_needs_a_zero_stock_ingredient(tmp_path: P
     assert "Iron Ingot" not in out
 
 
+def test_explain_warns_when_worst_case_yield_is_a_loss(tmp_path: Path, capsys):
+    # Confirmed by the user with a real example (Metal Solvent): a recipe
+    # can be profitable on bdocodex's average yield while being a real loss
+    # at the minimum end of the range -- must be flagged, not just averaged.
+    paths = _common_paths(tmp_path)
+    edges = [
+        ConversionEdge(
+            recipe_id=1,
+            name="Melted Iron Shard",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((4001, 5.0),),
+            base_outputs=(YieldRange(4051, 2.0, 2.0),),
+        ),
+        ConversionEdge(
+            recipe_id=2,
+            name="Metal Solvent",
+            process_type="Alchemy",
+            mastery_required=0,
+            inputs=((4051, 3.0), (9999, 2.0)),
+            base_outputs=(YieldRange(4076, 1.0, 2.0),),  # avg 1.5, worst case 1
+        ),
+    ]
+    fake_prices = {
+        4001: _snapshot(4001, "Iron Ore", 2710.0),
+        4051: _snapshot(4051, "Melted Iron Shard", 11200.0),
+        4076: _snapshot(4076, "Metal Solvent", 432000.0),
+        9999: _snapshot(9999, "Trace of Nature", 247000.0, current_stock=47060),
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        _run(paths, ["--explain", "4001", "--qty", "5"])
+
+    out = capsys.readouterr().out
+    assert "Worst case" in out
+    assert "WARNING" in out
+    assert "worse than just selling raw" in out
+
+
 def test_explain_warns_when_needed_quantity_exceeds_current_sell_listings(tmp_path: Path, capsys):
     # Confirmed by the user: current_stock is sell-side listings, not buy
     # orders -- needing far more than what's currently listed means the

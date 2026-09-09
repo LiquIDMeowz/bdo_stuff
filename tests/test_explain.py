@@ -21,6 +21,32 @@ MAKE3 = ConversionEdge(
 )
 
 
+# item1 (raw, price 10) --Make2Wide (yield 1-4, avg 2.5)--> item2 (price 1)
+# item2 + item10 (side, bought at 50) --Make3Fixed (yield exactly 1)--> item3 (price 1000)
+MAKE2_WIDE = ConversionEdge(
+    recipe_id=62, name="Make2Wide", process_type="Heating", mastery_required=0,
+    inputs=((1, 5.0),), base_outputs=(YieldRange(2, 1.0, 4.0),),
+)
+MAKE3_FIXED = ConversionEdge(
+    recipe_id=63, name="Make3Fixed", process_type="Heating", mastery_required=0,
+    inputs=((2, 1.0), (10, 3.0)), base_outputs=(YieldRange(3, 1.0, 1.0),),
+)
+
+
+def test_build_explain_computes_worst_case_total_using_minimum_yield():
+    # Confirmed by the user (Metal Solvent: profitable on average, a real
+    # loss at minimum yield) that average-case math alone hides real risk.
+    # qty=10 item1 -> 2 batches (fixed, driven by held item1, not yield) ->
+    # worst-case item2 = 2 * qty_min(1) = 2 -> 2 batches of Make3Fixed ->
+    # worst-case item3 = 2 * 1 = 2, side item10 needed = 2*3=6 @ 50 = 300.
+    # worst_case_total = 2*1000 - 300 = 1700 (vs average processed_total,
+    # which uses the 2.5 avg yield and comes out higher).
+    prices = {1: 10.0, 2: 1.0, 3: 1000.0, 10: 50.0}
+    result = build_explain(1, 10.0, [MAKE2_WIDE, MAKE3_FIXED], prices, {}, tax_rate=1.0)
+    assert result.worst_case_total == 1700.0
+    assert result.worst_case_total < result.processed_total
+
+
 def test_build_explain_walks_full_chain_with_scaled_quantities():
     prices = {1: 10.0, 2: 1.0, 3: 1000.0, 10: 50.0}
     result = build_explain(1, 10.0, [MAKE2, MAKE3], prices, {}, tax_rate=1.0)
