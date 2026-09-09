@@ -154,30 +154,34 @@ def _compute_stop_points(
 
 
 def _recommend_stop_point(points: list[StopPoint]) -> StopPoint:
-    """The best stopping point to actually commit to, walking the chain one
-    step at a time and only taking a step if its worst case doesn't risk
-    landing below what's already guaranteed by stopping now.
+    """The best stopping point to actually commit to: whichever point has
+    the best worst-case-guaranteed value across the *whole* chain.
 
-    Comparing every point's worst case against the raw baseline alone
-    isn't enough: a step whose worst case still beats raw can nonetheless
-    be worse than an already-guaranteed earlier stop (confirmed by the
-    user with a real example -- Copper Ore's ore-smelting steps are safe
-    and profitable on their own, but the next step pulls in expensive,
-    thin-margin Metal Solvent; its worst case might still clear the raw
-    price yet fall well short of what smelting alone already locked in).
-    Since reaching any later step means physically passing through every
-    step before it, the first step that would risk giving back the
-    already-guaranteed value stops the walk there -- a later step looking
-    fine "on paper" doesn't matter if you can't reach it without first
-    accepting that risk.
+    ``value_worst`` at each point already accounts for every yield-risk
+    step between the start and that point (see ``_compute_stop_points``),
+    so it IS the guaranteed floor if you commit to processing all the way
+    there -- there's no need to also refuse to pass through an earlier
+    point that merely looks worse than an even-earlier one.
+
+    That distinction matters for a real case found with the user's Milk
+    stockpile: Milk -> Cream is a deterministic step (no tracked yield
+    risk) that's genuinely worth *less* than raw Milk on its own, but
+    Cream -> Butter recovers to far more than double Milk's raw value.
+    An earlier version of this function walked step by step and stopped
+    the first time a step's worst case dipped below the best value seen
+    so far -- so it recommended selling Milk raw and never even
+    considered Butter, despite Butter's value being 100% guaranteed (no
+    risk at all is involved in either step). A pure "first step that
+    looks bad" rule can't tell a real, irreversible risk (e.g. Copper
+    Ore's thin-margin, yield-uncertain Metal Solvent step) apart from a
+    deterministic dip that's fully recovered one step later -- comparing
+    the whole chain's guaranteed floors side by side handles both
+    correctly: Copper Ore's genuinely risky step drags its own and every
+    later point's worst case down (so an earlier, safer point still wins),
+    while Milk's deterministic dip doesn't touch Butter's worst case at
+    all (so Butter still wins).
     """
-    best_stop = points[0]
-    for point in points[1:]:
-        if point.value_worst >= best_stop.value_avg:
-            best_stop = point
-        else:
-            break
-    return best_stop
+    return max(points, key=lambda p: p.value_worst)
 
 
 def build_explain(
