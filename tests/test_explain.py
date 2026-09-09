@@ -72,6 +72,39 @@ def test_build_explain_recommends_stopping_before_a_risky_step():
     assert points[2].value_worst == 1200.0  # ...but worst case gives back the guaranteed 2000
 
 
+# Real bug found with the user's actual Milk stockpile: item1 (raw, 10)
+# --StepA (Heating, fixed yield 2)--> item2 (3) -- a *deterministic* dip
+# below raw value (no yield uncertainty at all: 1x item1 -> 2x item2 @ 3 =
+# 6/unit-of-item1 < raw's 10) -- item2 --StepB (Heating, fixed yield 2)-->
+# item3 (20), a full recovery far above both raw and the dip. Since neither
+# step is a worst-case-tracked type, value_worst == value_avg at every
+# point: there is no real risk anywhere in this chain, so a temporary dip
+# must never block reaching a later, fully-guaranteed, better point.
+STEP_A_DIP = ConversionEdge(
+    90, "StepA", "Heating", 0, ((1, 1.0),), (YieldRange(2, 2.0, 2.0),)
+)
+STEP_B_RECOVER = ConversionEdge(
+    91, "StepB", "Heating", 0, ((2, 1.0),), (YieldRange(3, 2.0, 2.0),)
+)
+
+
+def test_build_explain_pushes_through_a_deterministic_dip_to_reach_a_later_recovery():
+    prices = {1: 10.0, 2: 3.0, 3: 20.0}
+    result = build_explain(1, 10.0, [STEP_A_DIP, STEP_B_RECOVER], prices, {}, tax_rate=1.0)
+
+    points = {p.step_index: p for p in result.stop_points}
+    assert points[-1].value_avg == 100.0  # sell item1 raw
+    assert points[0].value_avg == 60.0  # after StepA -- a real dip below raw
+    assert points[1].value_avg == 800.0  # after StepB -- fully guaranteed recovery
+
+    # A greedy walk that stops at the first dip would wrongly recommend
+    # raw (100). The dip is 100% deterministic (no tracked-risk process
+    # type involved), so it must be pushed through to reach the
+    # guaranteed 800 at the end.
+    assert result.recommended_stop_index == 1
+    assert result.recommended_stop_value == 800.0
+
+
 # item1 (raw, 10) --MakeShardHeating (Heating, yield 1-4, avg 2.5)--> item2 (100)
 MAKE_SHARD_HEATING_WIDE = ConversionEdge(
     80, "MakeShardWide", "Heating", 0, ((1, 5.0),), (YieldRange(2, 1.0, 4.0),)
