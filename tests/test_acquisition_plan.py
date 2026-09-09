@@ -118,6 +118,19 @@ def test_zero_stock_item_is_not_offered_as_buyable():
     assert plan2.unit_cost == 20.0
 
 
+def test_blocked_market_items_forces_a_fallback():
+    # A caller that knows the real quantity needed (this function only ever
+    # prices one unit) determines an item is too far short of stock to
+    # realistically fill that need, and blocks it -- forcing a fallback to
+    # craft or NPC, mirroring the zero-stock case but decided by the caller.
+    edges_by_output = build_edges_by_output([])
+    memo = {}
+    plan = cheapest_acquisition_plan(
+        302, edges_by_output, {302: 100.0}, {}, memo, blocked_market_items=frozenset({302}),
+    )
+    assert plan.method == "unavailable"
+
+
 def test_excluded_edges_are_skipped():
     # The craft-cheaper recipe would normally win, but if it's a known-bad
     # recipe (already excluded by the forward divergence guard), it must be

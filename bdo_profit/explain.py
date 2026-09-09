@@ -31,6 +31,35 @@ class ExplainResult:
     path_result: PathResult
 
 
+# Needing more than this many times the current sell-side listings counts as
+# "far short" -- confirmed by the user (Black Warrior Horn Bow: stock 3,
+# needed 833+) that a nonzero-but-nowhere-near-enough stock is just as
+# unachievable as literal zero, not merely worth a warning.
+STOCK_INSUFFICIENCY_THRESHOLD = 10.0
+MAX_STOCK_RETRIES = 8
+
+
+def _find_understocked_items(
+    plan: AcquisitionPlan, qty_needed: float, found: set[int]
+) -> None:
+    """Walk a built acquisition plan looking for any buy-market node where
+    the real quantity needed at that point in the tree is far beyond
+    current stock. ``cheapest_acquisition_plan`` only ever prices one unit,
+    so it can't make this call itself -- the caller has to propagate the
+    real quantity down through each craft hop (dividing by yield to get
+    batches, same math the display layer already does) to know what's
+    actually needed at each leaf.
+    """
+    if plan.method == "buy_market" and plan.available_stock is not None:
+        if qty_needed > STOCK_INSUFFICIENCY_THRESHOLD * plan.available_stock:
+            found.add(plan.item_id)
+        return
+    if plan.method == "craft" and plan.yield_expected:
+        batches_needed = qty_needed / plan.yield_expected
+        for sub_plan, sub_qty_per_batch in plan.inputs:
+            _find_understocked_items(sub_plan, batches_needed * sub_qty_per_batch, found)
+
+
 def build_explain(
     item_id: int,
     qty: float,
@@ -88,37 +117,54 @@ def build_explain(
         return ExplainResult(item_id, qty, raw_sell_total, raw_sell_total, (), 0.0, result)
 
     frozen_excluded = frozenset(excluded_edges)
+    blocked_market_items: frozenset[int] = frozenset()
     steps: list[ExplainStep] = []
-    current_item = item_id
-    current_qty = qty
-    for edge in result.edge_chain:
-        target_qty = next(q for iid, q in edge.inputs if iid == current_item)
-        batches = current_qty / target_qty
-        primary_out = edge.base_outputs[0]
-        output_qty = batches * primary_out.expected_qty
+    for _ in range(MAX_STOCK_RETRIES):
+        acq_memo_round: dict[int, AcquisitionPlan] = {}
+        steps = []
+        current_item = item_id
+        current_qty = qty
+        for edge in result.edge_chain:
+            target_qty = next(q for iid, q in edge.inputs if iid == current_item)
+            batches = current_qty / target_qty
+            primary_out = edge.base_outputs[0]
+            output_qty = batches * primary_out.expected_qty
 
-        side_ingredients: list[tuple[AcquisitionPlan, float]] = []
-        for iid, req_qty in edge.inputs:
-            if iid == current_item:
-                continue
-            total_needed = batches * req_qty
-            plan = cheapest_acquisition_plan(
-                iid, edges_by_output, prices, npc_prices, acq_memo, frozen_excluded,
-                stocks=stocks,
-            )
-            side_ingredients.append((plan, total_needed))
+            side_ingredients: list[tuple[AcquisitionPlan, float]] = []
+            for iid, req_qty in edge.inputs:
+                if iid == current_item:
+                    continue
+                total_needed = batches * req_qty
+                plan = cheapest_acquisition_plan(
+                    iid, edges_by_output, prices, npc_prices, acq_memo_round, frozen_excluded,
+                    stocks=stocks, blocked_market_items=blocked_market_items,
+                )
+                side_ingredients.append((plan, total_needed))
 
-        steps.append(
-            ExplainStep(
-                edge=edge,
-                primary_input_qty=current_qty,
-                batches=batches,
-                output_qty_expected=output_qty,
-                side_ingredients=tuple(side_ingredients),
+            steps.append(
+                ExplainStep(
+                    edge=edge,
+                    primary_input_qty=current_qty,
+                    batches=batches,
+                    output_qty_expected=output_qty,
+                    side_ingredients=tuple(side_ingredients),
+                )
             )
-        )
-        current_item = primary_out.item_id
-        current_qty = output_qty
+            current_item = primary_out.item_id
+            current_qty = output_qty
+
+        understocked: set[int] = set()
+        for step in steps:
+            for plan, total_needed in step.side_ingredients:
+                _find_understocked_items(plan, total_needed, understocked)
+        new_blocked = blocked_market_items | understocked
+        if new_blocked == blocked_market_items:
+            break
+        blocked_market_items = new_blocked
+    # acq_memo (the caller-shared one) picks up whatever the final, stable
+    # round settled on, so later build_explain calls sharing it inherit a
+    # correct starting point instead of the first round's stale plans.
+    acq_memo.update(acq_memo_round)
 
     processed_total = result.value_per_unit * qty
     bonus_upside_total = result.bonus_upside_per_unit * qty
