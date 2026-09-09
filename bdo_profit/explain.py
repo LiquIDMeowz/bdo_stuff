@@ -26,6 +26,7 @@ class ExplainResult:
     qty: float
     raw_sell_total: float
     processed_total: float
+    worst_case_total: float
     steps: tuple[ExplainStep, ...]
     bonus_upside_total: float
     path_result: PathResult
@@ -62,6 +63,39 @@ def _find_understocked_items(
         batches_needed = qty_needed / plan.yield_expected
         for sub_plan, sub_qty_per_batch in plan.inputs:
             _find_understocked_items(sub_plan, batches_needed * sub_qty_per_batch, found)
+
+
+def _compute_worst_case_total(
+    steps: tuple[ExplainStep, ...], qty: float, prices: dict[int, float], tax_rate: float
+) -> float:
+    """Total silver if every hop yields its minimum instead of its average --
+    confirmed by the user (Metal Solvent: profitable on average, a real loss
+    at minimum yield) that average-case math alone hides real risk on
+    thin-margin recipes.
+
+    A lower yield at one hop doesn't just cut revenue there -- it means
+    fewer units flow into every hop after it too, so this re-walks the
+    whole chain with its own parallel running quantity rather than just
+    scaling the existing average-case numbers down. Side-ingredient unit
+    costs and sourcing choices are reused as-is from the average-case walk
+    (needing less, not more, so whatever was achievable there remains
+    achievable here); only the quantities are recomputed.
+    """
+    current_qty_worst = qty
+    total_side_cost = 0.0
+    final_item_id = None
+    for step in steps:
+        target_qty = step.primary_input_qty / step.batches
+        batches_worst = current_qty_worst / target_qty
+        primary_out = step.edge.base_outputs[0]
+        for plan, avg_needed in step.side_ingredients:
+            per_batch = avg_needed / step.batches
+            total_side_cost += plan.unit_cost * (batches_worst * per_batch)
+        final_item_id = primary_out.item_id
+        current_qty_worst = batches_worst * primary_out.qty_min
+
+    final_sell_value = prices.get(final_item_id, 0.0) * tax_rate
+    return current_qty_worst * final_sell_value - total_side_cost
 
 
 def build_explain(
@@ -118,7 +152,7 @@ def build_explain(
     raw_sell_total = prices.get(item_id, 0.0) * tax_rate * qty
 
     if result.action == "sell_raw" or not result.edge_chain:
-        return ExplainResult(item_id, qty, raw_sell_total, raw_sell_total, (), 0.0, result)
+        return ExplainResult(item_id, qty, raw_sell_total, raw_sell_total, raw_sell_total, (), 0.0, result)
 
     frozen_excluded = frozenset(excluded_edges)
     blocked_market_items: frozenset[int] = frozenset()
@@ -171,7 +205,9 @@ def build_explain(
     acq_memo.update(acq_memo_round)
 
     processed_total = result.value_per_unit * qty
+    worst_case_total = _compute_worst_case_total(tuple(steps), qty, prices, tax_rate)
     bonus_upside_total = result.bonus_upside_per_unit * qty
     return ExplainResult(
-        item_id, qty, raw_sell_total, processed_total, tuple(steps), bonus_upside_total, result
+        item_id, qty, raw_sell_total, processed_total, worst_case_total,
+        tuple(steps), bonus_upside_total, result,
     )
