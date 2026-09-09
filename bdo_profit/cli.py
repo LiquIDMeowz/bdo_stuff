@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 from bdo_profit import cache, config, price_cache
-from bdo_profit.bottleneck import inject_universal_proc_costs
+from bdo_profit.bottleneck import find_cheapest_farming_action, inject_universal_proc_costs
 from bdo_profit.explain import ExplainResult, build_explain
 from bdo_profit.market_client import MarketClient
 from bdo_profit.profitability import (
@@ -236,7 +236,10 @@ def main(argv: list[str] | None = None) -> None:
         options = rank_acquisition_sources(
             args.sources, edges_by_output, prices, npc_prices, stocks, frozenset(excluded)
         )
-        _print_sources(args.sources, options, names, stocks, args.sources_limit)
+        farming_hints = _build_farming_hints(
+            universal_procs, edges, prices, npc_prices, args.tax_rate, stocks
+        )
+        _print_sources(args.sources, options, names, stocks, args.sources_limit, farming_hints)
         return
 
     memo: dict[int, PathResult] = {}
@@ -263,20 +266,49 @@ def main(argv: list[str] | None = None) -> None:
         _write_csv(results, names, stocks, trades, args.csv)
 
 
+def _build_farming_hints(
+    universal_procs: dict[str, config.UniversalProc],
+    edges: list,
+    prices: dict[int, float],
+    npc_prices: dict[int, float],
+    tax_rate: float,
+    stocks: dict[int, float],
+) -> dict[int, str]:
+    """Map each universal-proc item_id to a human-readable note on which
+    recipe is cheapest to farm it through -- the injected synthetic price
+    alone (e.g. "0/unit") doesn't say what to actually go cook."""
+    hints: dict[int, str] = {}
+    for process_type, proc in universal_procs.items():
+        found = find_cheapest_farming_action(
+            process_type, edges, prices, npc_prices, tax_rate, stocks
+        )
+        if found is None:
+            continue
+        edge, net_cost = found
+        cost_note = "free, already profitable outright" if net_cost <= 0 else f"~{net_cost:,.0f}/attempt"
+        hints[proc.item_id] = f"farm via {edge.name} [{process_type}], {cost_note}"
+    return hints
+
+
 def _print_sources(
     item_id: int,
     options: list[AcquisitionOption],
     names: dict[int, str],
     stocks: dict[int, float],
     limit: int,
+    farming_hints: dict[int, str] | None = None,
 ) -> None:
+    farming_hints = farming_hints or {}
+
     def name(iid: int) -> str:
         return names.get(iid, f"Item {iid}")
 
     def input_note(iid: int, qty: float) -> str:
         stock = stocks.get(iid)
         stock_note = f", stock {stock:,.0f}" if stock is not None else ""
-        return f"{qty:,.0f}x {name(iid)}{stock_note}"
+        hint = farming_hints.get(iid)
+        hint_note = f" [{hint}]" if hint else ""
+        return f"{qty:,.0f}x {name(iid)}{stock_note}{hint_note}"
 
     print(f"=== Sources for {name(item_id)} (id {item_id}) ===")
     if not options:

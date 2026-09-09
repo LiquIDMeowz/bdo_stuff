@@ -212,6 +212,9 @@ def test_sources_includes_universal_proc_farming_via_exchange(tmp_path: Path, ca
     # / 0.02 chance = 500/proc, * 10 procs needed / 120 milk = ~41.7/unit --
     # far cheaper than Milk's real 23,300 market price, so it must rank first.
     assert out.index("Liana Exchange") < out.index("BUY (market)")
+    # The ingredient line for Witch's Delicacy must say which recipe to
+    # actually go farm -- "0/unit via an Exchange" alone isn't actionable.
+    assert "farm via Cheap Stew" in out
 
 
 def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: Path, capsys):
