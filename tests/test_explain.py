@@ -23,8 +23,10 @@ MAKE3 = ConversionEdge(
 
 # item1 (raw, price 10) --Make2Wide (yield 1-4, avg 2.5)--> item2 (price 1)
 # item2 + item10 (side, bought at 50) --Make3Fixed (yield exactly 1)--> item3 (price 1000)
+# Alchemy, not Heating: worst-case yield risk is only tracked for
+# Alchemy/Cooking (mastery there is far less certain than Processing).
 MAKE2_WIDE = ConversionEdge(
-    recipe_id=62, name="Make2Wide", process_type="Heating", mastery_required=0,
+    recipe_id=62, name="Make2Wide", process_type="Alchemy", mastery_required=0,
     inputs=((1, 5.0),), base_outputs=(YieldRange(2, 1.0, 4.0),),
 )
 MAKE3_FIXED = ConversionEdge(
@@ -68,6 +70,29 @@ def test_build_explain_recommends_stopping_before_a_risky_step():
     assert points[1].value_avg == 2000.0  # sell item3 (after MakeIngot) -- recommended
     assert points[2].value_avg == 2800.0  # push through MakeCrystal -- better on average...
     assert points[2].value_worst == 1200.0  # ...but worst case gives back the guaranteed 2000
+
+
+# item1 (raw, 10) --MakeShardHeating (Heating, yield 1-4, avg 2.5)--> item2 (100)
+MAKE_SHARD_HEATING_WIDE = ConversionEdge(
+    80, "MakeShardWide", "Heating", 0, ((1, 5.0),), (YieldRange(2, 1.0, 4.0),)
+)
+
+
+def test_worst_case_yield_risk_is_not_tracked_for_processing_steps():
+    # Confirmed by the user with a real example: flagging basic ore smelting
+    # (mastery_required=0, Heating -- and the user's Processing mastery is
+    # near-max) as "risky" because it technically COULD hit the literal
+    # minimum yield on every single batch is statistically absurd at real
+    # batch counts, and contradicts how reliable ore smelting actually is
+    # in practice. Worst-case tracking is scoped to Alchemy/Cooking, where
+    # the user's own observations confirm real yields run well below
+    # bdocodex's stated maximum.
+    prices = {1: 10.0, 2: 100.0}
+    result = build_explain(1, 15.0, [MAKE_SHARD_HEATING_WIDE], prices, {}, tax_rate=1.0)
+    avg_point = result.stop_points[-1]
+    assert avg_point.qty_avg == 7.5  # 3 batches * 2.5 avg yield
+    assert avg_point.qty_worst == 7.5  # NOT 3 batches * 1 min yield (3) -- no discount applied
+    assert avg_point.value_avg == avg_point.value_worst == 750.0
 
 
 def test_build_explain_computes_worst_case_total_using_minimum_yield():

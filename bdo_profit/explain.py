@@ -49,6 +49,17 @@ class ExplainResult:
     recommended_stop_value: float = 0.0
 
 
+# Worst-case (minimum) yield is only tracked for these process types --
+# confirmed by the user with a real example (Copper Ore) that treating every
+# batch as independently able to hit bdocodex's literal minimum yield, with
+# no benefit from doing it thousands of times, is statistically absurd for
+# basic Processing (mastery_required=0, and the user's Processing mastery is
+# near-max) and flagged routine ore smelting as "risky", which it isn't in
+# practice. Alchemy/Cooking are kept because the user's own observations
+# (a recipe yielding "1-2 in practice" vs bdocodex's stated 1-4) confirm
+# real yields there run well below the stated maximum at their mastery.
+WORST_CASE_TRACKED_TYPES = frozenset({"Alchemy", "Simple Alchemy", "Cooking"})
+
 # Needing more than this many times the current sell-side listings counts as
 # "far short" -- confirmed by the user (Black Warrior Horn Bow: stock 3,
 # needed 833+) that a nonzero-but-nowhere-near-enough stock is just as
@@ -124,7 +135,12 @@ def _compute_stop_points(
             cum_side_cost_worst += plan.unit_cost * (batches_worst * per_batch)
 
         current_qty_avg = batches_avg * primary_out.expected_qty
-        current_qty_worst = batches_worst * primary_out.qty_min
+        step_yield = (
+            primary_out.qty_min
+            if step.edge.process_type in WORST_CASE_TRACKED_TYPES
+            else primary_out.expected_qty
+        )
+        current_qty_worst = batches_worst * step_yield
         current_item_id = primary_out.item_id
 
         sell_value = prices.get(current_item_id, 0.0) * tax_rate
