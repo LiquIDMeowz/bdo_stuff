@@ -150,6 +150,9 @@ def best_path_value(
     return PathResult(item_id, "sell_raw", sell_value, (), (), 0.0)
 
 
+MAX_PLAUSIBLE_VALUE = 1e15  # comfortably above any real BDO price, catches divergence
+
+
 def _solve_all(
     edges_by_input: dict[int, list[ConversionEdge]],
     prices: dict[int, float],
@@ -164,6 +167,16 @@ def _solve_all(
     Values start at each item's raw sale value and are relaxed upward in sweeps
     until nothing changes. Cycles converge naturally instead of recursing
     forever, and every item is solved in a single pass over the graph.
+
+    Not every cycle has a fixed point, though: bad recipe data (e.g. a
+    quantity/ratio error) can create a genuine positive-gain loop, where each
+    trip around nets more value than it took, and no amount of relaxation
+    converges -- it grows every sweep until max_iters, similarly for both a
+    slow crawl toward a merely-wrong number and a fast blowup toward an
+    astronomical, meaningless one. Items still changing by more than
+    ``epsilon`` when max_iters is exhausted, or whose value exceeds
+    ``MAX_PLAUSIBLE_VALUE``, are treated as unreliable and reset to their
+    plain raw-sale value rather than surfaced as a real number.
     """
     all_edges: set[ConversionEdge] = {
         edge for edges in edges_by_input.values() for edge in edges
@@ -180,8 +193,10 @@ def _solve_all(
     process_types: dict[int, tuple[str, ...]] = {iid: () for iid in universe}
     bonus_upside: dict[int, float] = {iid: 0.0 for iid in universe}
 
+    still_changing: set[int] = set()
     for _ in range(max_iters):
         changed = False
+        still_changing = set()
         for iid in universe:
             sell_value = prices.get(iid, 0.0) * tax_rate
             best_value, best_action, best_steps, best_types, best_upside = (
@@ -199,6 +214,7 @@ def _solve_all(
                     best_value, best_action, best_steps, best_types, best_upside = candidate
             if abs(best_value - value[iid]) > epsilon:
                 changed = True
+                still_changing.add(iid)
             value[iid] = best_value
             action[iid] = best_action
             steps[iid] = best_steps
@@ -209,18 +225,40 @@ def _solve_all(
     else:
         print(
             f"WARNING: profitability estimates did not fully converge after "
-            f"{max_iters} iterations; values may be approximate"
+            f"{max_iters} iterations; {len(still_changing)} item(s) still changing"
+        )
+
+    unreliable = still_changing | {
+        iid for iid in universe if abs(value[iid]) > MAX_PLAUSIBLE_VALUE
+    }
+    if unreliable:
+        sample = sorted(unreliable)[:10]
+        more = f" (+{len(unreliable) - 10} more)" if len(unreliable) > 10 else ""
+        print(
+            f"WARNING: {len(unreliable)} item(s) produced an unreliable/diverging value "
+            f"(likely a recipe data issue, e.g. a bad quantity ratio creating a "
+            f"positive-gain cycle) -- reset to plain raw-sale value: {sample}{more}"
         )
 
     for iid in universe:
-        memo[iid] = PathResult(
-            item_id=iid,
-            action=action[iid],
-            value_per_unit=value[iid],
-            steps=steps[iid],
-            process_types=process_types[iid],
-            bonus_upside_per_unit=bonus_upside[iid],
-        )
+        if iid in unreliable:
+            memo[iid] = PathResult(
+                item_id=iid,
+                action="sell_raw",
+                value_per_unit=prices.get(iid, 0.0) * tax_rate,
+                steps=(),
+                process_types=(),
+                bonus_upside_per_unit=0.0,
+            )
+        else:
+            memo[iid] = PathResult(
+                item_id=iid,
+                action=action[iid],
+                value_per_unit=value[iid],
+                steps=steps[iid],
+                process_types=process_types[iid],
+                bonus_upside_per_unit=bonus_upside[iid],
+            )
 
 
 def _evaluate_edge_relaxed(

@@ -80,12 +80,35 @@ def _primary_and_bonus_outputs(
     return primary, bonus
 
 
+def _merge_duplicate_items(
+    entries: list[tuple[int, float]] | list[tuple[int, float, float]],
+) -> tuple[tuple[int, float], ...]:
+    """Sum quantities for repeated item ids.
+
+    Confirmed on real bdocodex data: some recipes list the same ingredient
+    as two separate identical entries (e.g. "Black Gem", recipe 1768, lists
+    Black Stone twice at qty 1 instead of once at qty 2) rather than one
+    entry with a combined quantity. Left unmerged this understates both the
+    ingredient cost and the quantity needed of that item, which contributed
+    to a real divergent value on live data.
+    """
+    merged: dict[int, float] = {}
+    order: list[int] = []
+    for entry in entries:
+        item_id, qty = entry[0], entry[1]
+        if item_id not in merged:
+            order.append(item_id)
+            merged[item_id] = 0.0
+        merged[item_id] += qty
+    return tuple((item_id, merged[item_id]) for item_id in order)
+
+
 def parse_mrecipe_row(row: list) -> ConversionEdge:
     recipe_id = row[0]
     name = BeautifulSoup(row[2], "html.parser").select_one("b").get_text(strip=True)
     process_type = row[3]
     mastery_required = row[4]["sort_value"]
-    inputs = tuple((iid, qmin) for iid, qmin, _qmax in _extract_item_entries(row[6]))
+    inputs = _merge_duplicate_items(_extract_item_entries(row[6]))
     primary, bonus = _primary_and_bonus_outputs(row[8])
     return ConversionEdge(
         recipe_id=recipe_id,
@@ -147,10 +170,7 @@ def parse_recipe_detail_ingredients(html: str) -> tuple[tuple[int, float], ...]:
     container = label.find_parent("td")
     if container is None:
         return ()
-    ingredients = []
-    for item_id, qty_min, _qty_max in _extract_item_entries(str(container)):
-        ingredients.append((item_id, qty_min))
-    return tuple(ingredients)
+    return _merge_duplicate_items(_extract_item_entries(str(container)))
 
 
 def fetch_recipe_ingredients(

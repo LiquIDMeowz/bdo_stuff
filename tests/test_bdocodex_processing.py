@@ -5,6 +5,9 @@ from bdo_profit.scraper.bdocodex import PROCESS_TYPES, parse_mrecipe_row
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mrecipes_heating_sample.json"
 MALCHEMY_FIXTURE = Path(__file__).parent / "fixtures" / "mrecipes_malchemy_sample.json"
+BLACK_GEM_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "mrecipes_black_gem_duplicate_input_sample.json"
+)
 
 
 def _rows():
@@ -57,6 +60,20 @@ def test_parse_simple_alchemy_row_handles_multiple_inputs():
     assert edge.inputs == ((15628, 1.0), (4918, 10.0), (4917, 1.0))
     assert edge.base_outputs[0].item_id == 15803
     assert {b.item_id for b in edge.bonus_outputs} == {15802, 15801}
+
+
+def test_parse_row_merges_duplicate_input_item_ids():
+    # Real bdocodex data: "Black Gem" (recipe 1768) lists item 16001 (Black
+    # Stone) as two separate identical wrapper divs instead of one div with
+    # quantity 2 -- confirmed live on bdocodex.com. Left unmerged, this halves
+    # the apparent cost of the recipe (the engine only counts one of the two
+    # entries when summing "other" ingredient costs, and only sees quantity 1
+    # instead of 2 when valuing the duplicated item itself), which was found
+    # to contribute to a real divergent/astronomical value on live data.
+    row = json.loads(BLACK_GEM_FIXTURE.read_text())["aaData"][0]
+    edge = parse_mrecipe_row(row)
+    assert edge.name == "Black Gem"
+    assert edge.inputs == ((4999, 1.0), (16001, 2.0))
 
 
 def test_scrape_processing_recipes_skips_malformed_row_with_warning(capsys):

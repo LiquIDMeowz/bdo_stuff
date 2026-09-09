@@ -84,6 +84,61 @@ GRIND_THEN_HEAT_SECOND_HOP = ConversionEdge(
 )
 
 
+# A genuine positive-gain cycle: 1 unit of A -> 10 units of B, and 1 unit of
+# B -> 10 units of A, with no other costs. Going around the loop nets more of
+# what you started with every time, so no fixed point exists -- this must
+# never surface as an astronomical "value", only fall back to a safe raw sale.
+A_TO_B_GAIN = ConversionEdge(
+    recipe_id=901,
+    name="A to B",
+    process_type="Grinding",
+    mastery_required=0,
+    inputs=((9001, 1.0),),
+    base_outputs=(YieldRange(9002, 10.0, 10.0),),
+)
+B_TO_A_GAIN = ConversionEdge(
+    recipe_id=902,
+    name="B to A",
+    process_type="Grinding",
+    mastery_required=0,
+    inputs=((9002, 1.0),),
+    base_outputs=(YieldRange(9001, 10.0, 10.0),),
+)
+
+
+def test_diverging_positive_gain_cycle_falls_back_to_sell_raw(capsys):
+    edges_by_input = build_edges_by_input([A_TO_B_GAIN, B_TO_A_GAIN])
+    prices = {9001: 100.0, 9002: 100.0}
+    memo = {}
+    result_a = best_path_value(9001, edges_by_input, prices, {}, 0.65, memo)
+    result_b = best_path_value(9002, edges_by_input, prices, {}, 0.65, memo)
+    # Must never be an astronomical/meaningless number -- real BDO prices
+    # never come close to even a trillion silver per unit.
+    assert abs(result_a.value_per_unit) < 1e12
+    assert abs(result_b.value_per_unit) < 1e12
+    assert result_a.action == "sell_raw"
+    assert result_b.action == "sell_raw"
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_legitimately_large_finite_value_is_not_reset():
+    # A single expensive hop, no cycle -- large but finite and must survive.
+    edge = ConversionEdge(
+        recipe_id=910,
+        name="Rare Combine",
+        process_type="Heating",
+        mastery_required=0,
+        inputs=((9101, 1.0),),
+        base_outputs=(YieldRange(9102, 1.0, 1.0),),
+    )
+    edges_by_input = build_edges_by_input([edge])
+    prices = {9101: 100.0, 9102: 30_000_000_000.0}  # 30 billion -- real-world extreme, not a bug
+    memo = {}
+    result = best_path_value(9101, edges_by_input, prices, {}, 0.65, memo)
+    assert result.action != "sell_raw"
+    assert result.value_per_unit > 1_000_000_000
+
+
 def test_category_reachable_items_includes_direct_matches():
     reachable = category_reachable_items([HEAT_ONLY_EDGE], {"Heating"})
     assert reachable == {2001, 2002}
