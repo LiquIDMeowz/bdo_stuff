@@ -27,7 +27,7 @@ DEFAULT_CACHE_PATH = Path("data/recipes_cache.json")
 DEFAULT_BONUS_PATH = Path("config/bonus_proc_rates.yaml")
 DEFAULT_NPC_PATH = Path("data/npc_prices.json")
 DEFAULT_PRICE_CACHE_PATH = Path("data/price_cache.json")
-DEFAULT_PRICE_CACHE_TTL = 3600.0
+DEFAULT_PRICE_CACHE_TTL = 302400.0  # 3.5 days -- most item prices barely move week to week
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -47,7 +47,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--price-cache-ttl",
         type=float,
         default=DEFAULT_PRICE_CACHE_TTL,
-        help="Reuse a cached price younger than this many seconds (default 3600 = 1 hour)",
+        help="Reuse a cached price younger than this many seconds (default 302400 = 3.5 days)",
     )
     parser.add_argument(
         "--fresh-prices",
