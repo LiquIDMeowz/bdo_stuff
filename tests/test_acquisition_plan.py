@@ -87,6 +87,18 @@ def test_cycle_falls_back_to_buy_price_without_infinite_recursion():
     assert plan.unit_cost < float("inf")
 
 
+def test_buy_market_plan_carries_available_stock():
+    # Confirmed by the user: current_stock is sell-side listings, not buy
+    # orders -- a low/zero stock means "no one's actually selling this",
+    # even if a price exists, and buying a large quantity can take days.
+    edges_by_output = build_edges_by_output([])
+    prices = {300: 1000.0}
+    memo = {}
+    plan = cheapest_acquisition_plan(300, edges_by_output, prices, {}, memo, stocks={300: 12})
+    assert plan.method == "buy_market"
+    assert plan.available_stock == 12
+
+
 def test_excluded_edges_are_skipped():
     # The craft-cheaper recipe would normally win, but if it's a known-bad
     # recipe (already excluded by the forward divergence guard), it must be

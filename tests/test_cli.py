@@ -154,6 +154,37 @@ def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: P
     assert "Melted Iron Shard" in out
     assert "Iron Ingot" in out
     assert "Flux" in out  # side ingredient shown, not just the main chain
+
+
+def test_explain_warns_when_needed_quantity_exceeds_current_sell_listings(tmp_path: Path, capsys):
+    # Confirmed by the user: current_stock is sell-side listings, not buy
+    # orders -- needing far more than what's currently listed means the
+    # purchase may not be fillable soon even at the shown price.
+    paths = _common_paths(tmp_path)
+    edges = [
+        ConversionEdge(
+            recipe_id=1,
+            name="Melted Iron Shard",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((4001, 5.0), (9999, 1.0)),
+            base_outputs=(YieldRange(4051, 2.0, 2.0),),
+        ),
+    ]
+    fake_prices = {
+        4001: _snapshot(4001, "Iron Ore", 100.0),
+        4051: _snapshot(4051, "Melted Iron Shard", 10_000.0),
+        9999: _snapshot(9999, "Scarce Flux", 500.0, current_stock=3),
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        _run(paths, ["--explain", "4001", "--qty", "50"])
+
+    out = capsys.readouterr().out
+    assert "Scarce Flux" in out
+    assert "WARNING" in out
+    assert "current sell listings" in out
     assert "BUY" in out  # Flux has no recipe -> must be bought
 
 

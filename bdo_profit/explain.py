@@ -38,6 +38,7 @@ def build_explain(
     prices: dict[int, float],
     npc_prices: dict[int, float],
     tax_rate: float,
+    stocks: dict[int, float] | None = None,
 ) -> ExplainResult:
     """Full step-by-step plan for turning ``qty`` units of ``item_id`` into
     silver: every hop of the chosen forward chain, with quantities scaled to
@@ -58,6 +59,7 @@ def build_explain(
         return ExplainResult(item_id, qty, raw_sell_total, raw_sell_total, (), 0.0, result)
 
     frozen_excluded = frozenset(excluded)
+    stocks = stocks or {}
     acq_memo: dict[int, AcquisitionPlan] = {}
     steps: list[ExplainStep] = []
     current_item = item_id
@@ -74,7 +76,8 @@ def build_explain(
                 continue
             total_needed = batches * req_qty
             plan = cheapest_acquisition_plan(
-                iid, edges_by_output, prices, npc_prices, acq_memo, frozen_excluded
+                iid, edges_by_output, prices, npc_prices, acq_memo, frozen_excluded,
+                stocks=stocks,
             )
             side_ingredients.append((plan, total_needed))
 

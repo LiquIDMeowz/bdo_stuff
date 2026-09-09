@@ -130,6 +130,7 @@ class AcquisitionPlan:
     recipe_id: int | None = None
     yield_expected: float | None = None
     inputs: tuple[tuple["AcquisitionPlan", float], ...] = ()
+    available_stock: float | None = None  # current sell-side listings, for buy_market only
 
 
 def cheapest_acquisition_plan(
@@ -140,6 +141,7 @@ def cheapest_acquisition_plan(
     memo: dict[int, AcquisitionPlan],
     excluded_edges: frozenset[ConversionEdge] = frozenset(),
     visiting: frozenset[int] = frozenset(),
+    stocks: dict[int, float] = {},
 ) -> AcquisitionPlan:
     """Cheapest way to acquire one unit of ``item_id``: buy it outright, or
     craft it from its own cheapest-acquired inputs (recursively).
@@ -157,6 +159,12 @@ def cheapest_acquisition_plan(
     needs A) is broken by falling back to a plain buy price whenever a
     node is revisited mid-recursion, so this always terminates -- mirrors
     the forward solver falling back to a raw sale on a genuine cycle.
+
+    ``stocks``, when given, is attached to any buy-market plan as
+    ``available_stock``. Confirmed by the user: this reflects current
+    sell-side listings, not buy orders -- a real price can still exist with
+    near-zero stock (nobody currently selling), and a caller recommending a
+    large purchase against that needs the stock figure to warn accordingly.
     """
     if item_id in memo:
         return memo[item_id]
@@ -172,7 +180,10 @@ def cheapest_acquisition_plan(
         buy_cost = npc_price
         buy_method = "buy_npc"
 
-    best_plan = AcquisitionPlan(item_id, buy_cost, buy_method)
+    best_plan = AcquisitionPlan(
+        item_id, buy_cost, buy_method,
+        available_stock=stocks.get(item_id) if buy_method == "buy_market" else None,
+    )
 
     if item_id in visiting:
         return best_plan
@@ -188,7 +199,8 @@ def cheapest_acquisition_plan(
         valid = True
         for in_id, in_qty in edge.inputs:
             sub_plan = cheapest_acquisition_plan(
-                in_id, edges_by_output, prices, npc_prices, memo, excluded_edges, visiting | {item_id}
+                in_id, edges_by_output, prices, npc_prices, memo, excluded_edges,
+                visiting | {item_id}, stocks,
             )
             if sub_plan.unit_cost == float("inf"):
                 valid = False

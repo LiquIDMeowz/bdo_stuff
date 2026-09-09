@@ -173,7 +173,9 @@ def main(argv: list[str] | None = None) -> None:
     price_cache.save_price_cache(disk_price_cache, args.price_cache_path)
 
     if args.explain is not None:
-        explain_result = build_explain(args.explain, args.qty, edges, prices, npc_prices, args.tax_rate)
+        explain_result = build_explain(
+            args.explain, args.qty, edges, prices, npc_prices, args.tax_rate, stocks=stocks
+        )
         _print_explain(explain_result, names)
         return
 
@@ -259,10 +261,24 @@ def _print_acquisition_plan(
     else:
         source = "NPC vendor" if plan.method == "buy_npc" else "market"
         total_cost = plan.unit_cost * qty_needed
+        stock_note = ""
+        if plan.method == "buy_market" and plan.available_stock is not None:
+            stock_note = f" [current sell listings: {plan.available_stock:,.0f}]"
         print(
             f"{pad}BUY {qty_needed:,.1f} x {name(plan.item_id)} from {source} "
-            f"-- {total_cost:,.0f} total ({plan.unit_cost:,.0f}/unit)"
+            f"-- {total_cost:,.0f} total ({plan.unit_cost:,.0f}/unit){stock_note}"
         )
+        if (
+            plan.method == "buy_market"
+            and plan.available_stock is not None
+            and qty_needed > plan.available_stock
+        ):
+            print(
+                f"{pad}  ^ WARNING: current sell listings ({plan.available_stock:,.0f}) are "
+                f"below what you need ({qty_needed:,.1f}) -- this is sell-side stock, not buy "
+                f"orders, so buying the full amount may not be possible right now and could "
+                f"take a long time to fill even at this price."
+            )
 
 
 def _print_table(
