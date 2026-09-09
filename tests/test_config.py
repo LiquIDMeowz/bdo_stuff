@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from bdo_profit.config import load_mastery, load_npc_prices, load_bonus_proc_rates
+from bdo_profit.config import (
+    load_mastery,
+    load_npc_prices,
+    load_bonus_proc_rates,
+    load_universal_procs,
+)
 
 
 def test_load_mastery(tmp_path: Path):
@@ -64,3 +69,27 @@ def test_load_bonus_proc_rates_malformed_shape_returns_empty(tmp_path: Path):
     p = tmp_path / "bonus_proc_rates.yaml"
     p.write_text("- 112\n- 0.1\n")  # list, not a mapping
     assert load_bonus_proc_rates(p) == {}
+
+
+def test_load_universal_procs_with_entries(tmp_path: Path):
+    p = tmp_path / "universal_procs.json"
+    p.write_text(json.dumps({
+        "Cooking": {"item_id": 9780, "item_name": "Witch's Delicacy", "chance": 0.02, "qty": 1},
+    }))
+    procs = load_universal_procs(p)
+    assert procs["Cooking"].item_id == 9780
+    assert procs["Cooking"].item_name == "Witch's Delicacy"
+    assert procs["Cooking"].chance == 0.02
+    assert procs["Cooking"].qty == 1.0
+
+
+def test_load_universal_procs_missing_file_warns_and_returns_empty(tmp_path: Path, capsys):
+    missing = tmp_path / "does_not_exist.json"
+    assert load_universal_procs(missing) == {}
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_load_universal_procs_malformed_shape_returns_empty(tmp_path: Path):
+    p = tmp_path / "universal_procs.json"
+    p.write_text(json.dumps([1, 2, 3]))  # list, not a mapping
+    assert load_universal_procs(p) == {}

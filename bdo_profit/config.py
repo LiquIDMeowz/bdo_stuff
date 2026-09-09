@@ -42,3 +42,32 @@ def load_bonus_proc_rates(path: Path) -> dict[int, float]:
     except (FileNotFoundError, yaml.YAMLError, AttributeError, ValueError) as exc:
         print(f"WARNING: could not load bonus proc rates from {path}: {exc}")
         return {}
+
+
+@dataclass
+class UniversalProc:
+    item_id: int
+    item_name: str
+    chance: float
+    qty: float
+
+
+def load_universal_procs(path: Path) -> dict[str, UniversalProc]:
+    # Confirmed by the user: some proc chances apply to ANY recipe of a given
+    # process_type (e.g. every Cooking action has ~2% odds of also yielding
+    # Witch's Delicacy) -- this isn't per-recipe data bdocodex exposes, so it's
+    # hand-maintained here, same as npc_prices.json.
+    try:
+        raw = json.loads(path.read_text())
+        return {
+            process_type: UniversalProc(
+                item_id=int(entry["item_id"]),
+                item_name=str(entry["item_name"]),
+                chance=float(entry["chance"]),
+                qty=float(entry["qty"]),
+            )
+            for process_type, entry in raw.items()
+        }
+    except (FileNotFoundError, json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError) as exc:
+        print(f"WARNING: could not load universal procs from {path}: {exc}")
+        return {}
