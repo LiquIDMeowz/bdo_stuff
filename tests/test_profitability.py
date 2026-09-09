@@ -86,8 +86,11 @@ GRIND_THEN_HEAT_SECOND_HOP = ConversionEdge(
 
 # A genuine positive-gain cycle: 1 unit of A -> 10 units of B, and 1 unit of
 # B -> 10 units of A, with no other costs. Going around the loop nets more of
-# what you started with every time, so no fixed point exists -- this must
-# never surface as an astronomical "value", only fall back to a safe raw sale.
+# what you started with every time, so no fixed point exists for the pair --
+# this must never surface as an astronomical "value". Breaking the cycle only
+# requires excluding one of the two edges (removing either stops it being a
+# cycle), so the other -- now just an ordinary, non-circular conversion -- is
+# left in place rather than also being reset to a raw sale.
 A_TO_B_GAIN = ConversionEdge(
     recipe_id=901,
     name="A to B",
@@ -116,9 +119,41 @@ def test_diverging_positive_gain_cycle_falls_back_to_sell_raw(capsys):
     # never come close to even a trillion silver per unit.
     assert abs(result_a.value_per_unit) < 1e12
     assert abs(result_b.value_per_unit) < 1e12
-    assert result_a.action == "sell_raw"
-    assert result_b.action == "sell_raw"
+    # Only one direction of the mutual cycle is excluded (that's enough to
+    # break it); the other survives as an ordinary conversion.
+    assert result_a.action == "sell_raw" or result_b.action == "sell_raw"
     assert "WARNING" in capsys.readouterr().out
+
+
+def test_diverging_cycle_does_not_contaminate_an_unrelated_stable_chain():
+    # Confirmed on real data: a diverging cycle in one part of the graph
+    # (e.g. a niche boss-crystal sub-economy) was previously sweeping
+    # hundreds of entirely unrelated, perfectly stable items (e.g. basic ore
+    # smelting) into "unreliable" too, just because they shared the same
+    # global relaxation pass. A stable chain sharing nothing with the cycle
+    # must keep its real, properly computed value.
+    stable_chain = ConversionEdge(
+        recipe_id=920,
+        name="Melted Iron Shard",
+        process_type="Heating",
+        mastery_required=0,
+        inputs=((9301, 5.0),),
+        base_outputs=(YieldRange(9302, 1.0, 4.0),),
+    )
+    edges_by_input = build_edges_by_input([A_TO_B_GAIN, B_TO_A_GAIN, stable_chain])
+    prices = {9001: 100.0, 9002: 100.0, 9301: 100.0, 9302: 2000.0}
+    memo = {}
+    stable_result = best_path_value(9301, edges_by_input, prices, {}, 0.65, memo)
+    cycle_result_a = best_path_value(9001, edges_by_input, prices, {}, 0.65, memo)
+
+    assert stable_result.action != "sell_raw"
+    # 5x9301 -> 1~4x9302 (midpoint 2.5) @ 2000 * 0.65 tax = 3250/batch / 5 = 650/unit
+    assert stable_result.value_per_unit == 650.0
+    # The cycle is broken by excluding just one of its two edges (enough to
+    # stop it being a cycle), so A's value stays bounded either way -- via
+    # the surviving conversion or a plain raw sale -- and never inherits the
+    # unrelated stable chain's value or blows up.
+    assert abs(cycle_result_a.value_per_unit) < 1e12
 
 
 def test_legitimately_large_finite_value_is_not_reset():
@@ -132,11 +167,13 @@ def test_legitimately_large_finite_value_is_not_reset():
         base_outputs=(YieldRange(9102, 1.0, 1.0),),
     )
     edges_by_input = build_edges_by_input([edge])
-    prices = {9101: 100.0, 9102: 30_000_000_000.0}  # 30 billion -- real-world extreme, not a bug
+    # 18B -- there's no universal Central Market cap; rare boss-drop items
+    # (Khan's Heart, Vell's Heart, Kabua's Artifact) really do trade this high.
+    prices = {9101: 100.0, 9102: 18_000_000_000.0}
     memo = {}
     result = best_path_value(9101, edges_by_input, prices, {}, 0.65, memo)
     assert result.action != "sell_raw"
-    assert result.value_per_unit > 1_000_000_000
+    assert result.value_per_unit > 10_000_000_000
 
 
 def test_category_reachable_items_includes_direct_matches():

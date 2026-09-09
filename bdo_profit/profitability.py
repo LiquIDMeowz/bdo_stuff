@@ -150,7 +150,11 @@ def best_path_value(
     return PathResult(item_id, "sell_raw", sell_value, (), (), 0.0)
 
 
-MAX_PLAUSIBLE_VALUE = 1e15  # comfortably above any real BDO price, catches divergence
+MAX_PLAUSIBLE_VALUE = 1e11  # there's no universal Central Market cap -- rare boss-drop
+# items (Khan's Heart, Vell's Heart, Kabua's Artifact) genuinely trade up to ~15-20B
+# silver, confirmed against real listings. This stays comfortably above any real price
+# while still catching genuine exploit-cycle blowups, which reach 1e20+ in practice.
+MAX_DIVERGENCE_RETRIES = 100  # each retry strips out one more (usually small) cycle
 
 
 def _solve_all(
@@ -173,11 +177,226 @@ def _solve_all(
     trip around nets more value than it took, and no amount of relaxation
     converges -- it grows every sweep until max_iters, similarly for both a
     slow crawl toward a merely-wrong number and a fast blowup toward an
-    astronomical, meaningless one. Items still changing by more than
-    ``epsilon`` when max_iters is exhausted, or whose value exceeds
-    ``MAX_PLAUSIBLE_VALUE``, are treated as unreliable and reset to their
-    plain raw-sale value rather than surfaced as a real number.
+    astronomical, meaningless one.
+
+    When that happens, this does NOT just blanket-distrust the whole
+    (possibly huge, shared) connected component that the diverging items sit
+    in -- confirmed on real data that this can sweep in hundreds of entirely
+    unrelated, perfectly stable items (e.g. basic ore smelting) purely
+    because the graph is large and interconnected. Instead: identify exactly
+    which edge each still-diverging item was using when the sweep budget ran
+    out, strip only those specific edges out, and re-solve from scratch.
+
+    Some positive-gain cycles settle into a self-consistent but still
+    astronomically large fixed point *within* the sweep budget, rather than
+    visibly oscillating -- so they never show up in ``still_changing`` at
+    all. Left alone, that implausible-but-"stable" value gets picked up by
+    any unrelated legitimate recipe that happens to consume the poisoned
+    item (confirmed on real data: basic ore smelting inherited a ~1e22
+    value this way, through a multi-hop boss-crystal chain it has nothing
+    else to do with). So every item whose value exceeds
+    ``MAX_PLAUSIBLE_VALUE`` is fed into the same cycle-detection walk as the
+    oscillating items: only the edges that form an actual cycle *within*
+    that combined set get excluded. An item that merely consumes something
+    implausible without being part of the loop itself (e.g. Melted Iron
+    Shard, which is on the path *into* the crystal economy but never part
+    of its loop) is correctly left alone, so its edge is never blamed --
+    confirmed on real data this was previously excluding "Heating: Melted
+    Iron Shard" itself and permanently sinking Iron Ore to sell_raw.
+
+    Not every implausible value comes from a cycle, though -- confirmed on
+    real data: a single recipe with a wildly wrong ratio (1 input -> 720
+    output units) sitting partway down an otherwise-ordinary acyclic chain
+    inflates everything upstream of it without ever repeating a node. Cycle
+    detection alone can't see that (nothing repeats), so the same walk also
+    looks for the exact point where a chain of implausible values bottoms
+    out at a plausible one -- that transition edge is the true origin and
+    is excluded on its own, leaving the plausible edges on both sides of it
+    untouched.
+
+    Repeat until everything converges to plausible values or the retry
+    budget is exhausted; only whatever is still diverging or implausible
+    after that gets reset to its plain raw-sale value.
     """
+    excluded_edges: frozenset[ConversionEdge] = frozenset()
+    result = None
+    for _ in range(MAX_DIVERGENCE_RETRIES):
+        result = _solve_all_pass(
+            edges_by_input, prices, npc_prices, tax_rate, max_iters, epsilon, excluded_edges
+        )
+        implausible = {
+            iid for iid in result.universe if abs(result.value[iid]) > MAX_PLAUSIBLE_VALUE
+        }
+        culprits = _find_culprit_edges(
+            result.still_changing, implausible, result.chosen_edge
+        )
+        if not result.still_changing and not implausible:
+            break
+        if not culprits:
+            # Nothing we can point at a specific edge for -- e.g. a chain
+            # too long to converge within max_iters, with no clean cycle
+            # and no single item over the magnitude threshold yet. Blaming
+            # every diverging item's edge here would blame innocent
+            # bystanders whose only fault is depending on something still
+            # resolving. Stop retrying and let the final magnitude/
+            # still-changing check handle it.
+            break
+        new_excluded = excluded_edges | culprits
+        if new_excluded == excluded_edges:
+            break
+        excluded_edges = new_excluded
+    else:
+        print(
+            f"WARNING: profitability graph still diverging after "
+            f"{MAX_DIVERGENCE_RETRIES} rounds of stripping culprit recipes"
+        )
+
+    if excluded_edges:
+        culprit_names = sorted({f"{e.process_type}: {e.name}" for e in excluded_edges})
+        print(
+            f"WARNING: excluded {len(excluded_edges)} recipe(s) that formed a "
+            f"positive-gain value cycle with no fixed point (likely a recipe data "
+            f"issue, e.g. a bad quantity ratio): {culprit_names}"
+        )
+
+    unreliable = result.still_changing | {
+        iid for iid in result.universe if abs(result.value[iid]) > MAX_PLAUSIBLE_VALUE
+    }
+    if unreliable:
+        sample = sorted(unreliable)[:10]
+        more = f" (+{len(unreliable) - 10} more)" if len(unreliable) > 10 else ""
+        print(
+            f"WARNING: {len(unreliable)} item(s) still produced an unreliable/diverging "
+            f"value even after excluding culprit recipes -- reset to plain raw-sale "
+            f"value: {sample}{more}"
+        )
+
+    for iid in result.universe:
+        if iid in unreliable:
+            memo[iid] = PathResult(
+                item_id=iid,
+                action="sell_raw",
+                value_per_unit=prices.get(iid, 0.0) * tax_rate,
+                steps=(),
+                process_types=(),
+                bonus_upside_per_unit=0.0,
+            )
+        else:
+            memo[iid] = PathResult(
+                item_id=iid,
+                action=result.action[iid],
+                value_per_unit=result.value[iid],
+                steps=result.steps[iid],
+                process_types=result.process_types[iid],
+                bonus_upside_per_unit=result.bonus_upside[iid],
+            )
+
+
+def _find_culprit_edges(
+    still_changing: set[int],
+    implausible: set[int],
+    chosen_edge: dict[int, "ConversionEdge | None"],
+) -> set[ConversionEdge]:
+    """Which edges are actually responsible for a diverging or implausible
+    value, restricted to still-diverging and implausible-magnitude items.
+
+    Each suspect item points to at most one "next" item (its chosen edge's
+    primary output), so this is a functional graph -- standard cycle
+    detection by following chains and watching for a repeat within the
+    current path finds genuine loops (e.g. Black Stone -> Powder -> ... ->
+    Black Stone). Every edge on a detected loop is blamed, since a single
+    exclusion per round converges far too slowly on a graph this tangled
+    (confirmed on real data: hundreds of rounds still hadn't resolved a
+    ~600-item residual). An item that merely depends on a bad value
+    without being part of the loop itself is not on this walk's path at
+    all once the state-bookkeeping bug below is accounted for, so its
+    edge is correctly never blamed.
+
+    Not every bad value comes from a literal cycle: a single recipe with a
+    wrong ratio can inflate a whole acyclic chain above it without any
+    node repeating. When a walk from a still-diverging/implausible item
+    reaches a *plausible* item (or a leaf) without ever repeating, the
+    deepest implausible node in that walk is where the value actually
+    originates -- everything shallower than it just inherited an already-
+    bad number through an otherwise-correct edge. Only that one edge is
+    blamed in that case; a walk that bottoms out in the merely-still-
+    changing set with no implausible node in it is left alone, since a
+    long-but-sane chain that hasn't finished converging yet looks the
+    same and blaming it would sink a legitimate item.
+
+    The ``state`` visitation below is shared across every starting node's
+    walk (standard practice, keeps this O(V)) -- but that means a walk can
+    reach a node some *other* walk already fully resolved and marked
+    "done". Confirmed on real data that treating that the same as
+    "genuinely reached a plausible value" produced order-dependent false
+    positives: ordinary ore smelting got blamed as an "origin" purely
+    because Python's set iteration happened to explore an unrelated
+    downstream item first. Only a walk that truly exits the suspect set
+    (a plausible value or a leaf, not another walk's leftovers) is
+    trusted for origin-blame.
+    """
+    suspect = still_changing | implausible
+    next_item: dict[int, int] = {}
+    for iid in suspect:
+        edge = chosen_edge.get(iid)
+        if edge is not None and edge.base_outputs:
+            next_item[iid] = edge.base_outputs[0].item_id
+
+    culprit_edges: set[ConversionEdge] = set()
+    state: dict[int, int] = {}  # 0/absent=unvisited, 1=in current path, 2=done
+    for start in suspect:
+        if state.get(start, 0) != 0:
+            continue
+        path: list[int] = []
+        node: int | None = start
+        while node is not None and node in suspect and state.get(node, 0) == 0:
+            state[node] = 1
+            path.append(node)
+            node = next_item.get(node)
+        if node is not None and state.get(node) == 1:
+            idx = path.index(node)
+            for cycle_node in path[idx:]:
+                edge = chosen_edge.get(cycle_node)
+                if edge is not None:
+                    culprit_edges.add(edge)
+        elif (
+            path
+            and path[-1] in implausible
+            and (node is None or node not in suspect)
+        ):
+            # The walk ended because it genuinely left the suspect set (a
+            # plausible value or a leaf), not because it ran into a node
+            # some other walk already finished with -- that would just be
+            # bookkeeping order, not evidence this path's origin is here.
+            edge = chosen_edge.get(path[-1])
+            if edge is not None:
+                culprit_edges.add(edge)
+        for p in path:
+            state[p] = 2
+    return culprit_edges
+
+
+@dataclass
+class _SweepResult:
+    value: dict[int, float]
+    action: dict[int, str]
+    steps: dict[int, tuple[str, ...]]
+    process_types: dict[int, tuple[str, ...]]
+    bonus_upside: dict[int, float]
+    still_changing: set[int]
+    chosen_edge: dict[int, ConversionEdge | None]
+    universe: set[int]
+
+
+def _solve_all_pass(
+    edges_by_input: dict[int, list[ConversionEdge]],
+    prices: dict[int, float],
+    npc_prices: dict[int, float],
+    tax_rate: float,
+    max_iters: int,
+    epsilon: float,
+    excluded_edges: frozenset[ConversionEdge],
+) -> _SweepResult:
     all_edges: set[ConversionEdge] = {
         edge for edges in edges_by_input.values() for edge in edges
     }
@@ -192,6 +411,7 @@ def _solve_all(
     steps: dict[int, tuple[str, ...]] = {iid: () for iid in universe}
     process_types: dict[int, tuple[str, ...]] = {iid: () for iid in universe}
     bonus_upside: dict[int, float] = {iid: 0.0 for iid in universe}
+    chosen_edge: dict[int, ConversionEdge | None] = {iid: None for iid in universe}
 
     still_changing: set[int] = set()
     for _ in range(max_iters):
@@ -206,12 +426,16 @@ def _solve_all(
                 (),
                 0.0,
             )
+            best_edge: ConversionEdge | None = None
             for edge in edges_by_input.get(iid, []):
+                if edge in excluded_edges:
+                    continue
                 candidate = _evaluate_edge_relaxed(
                     edge, iid, value, action, steps, process_types, prices, npc_prices
                 )
                 if candidate is not None and candidate[0] > best_value:
                     best_value, best_action, best_steps, best_types, best_upside = candidate
+                    best_edge = edge
             if abs(best_value - value[iid]) > epsilon:
                 changed = True
                 still_changing.add(iid)
@@ -220,45 +444,20 @@ def _solve_all(
             steps[iid] = best_steps
             process_types[iid] = best_types
             bonus_upside[iid] = best_upside
+            chosen_edge[iid] = best_edge
         if not changed:
             break
-    else:
-        print(
-            f"WARNING: profitability estimates did not fully converge after "
-            f"{max_iters} iterations; {len(still_changing)} item(s) still changing"
-        )
 
-    unreliable = still_changing | {
-        iid for iid in universe if abs(value[iid]) > MAX_PLAUSIBLE_VALUE
-    }
-    if unreliable:
-        sample = sorted(unreliable)[:10]
-        more = f" (+{len(unreliable) - 10} more)" if len(unreliable) > 10 else ""
-        print(
-            f"WARNING: {len(unreliable)} item(s) produced an unreliable/diverging value "
-            f"(likely a recipe data issue, e.g. a bad quantity ratio creating a "
-            f"positive-gain cycle) -- reset to plain raw-sale value: {sample}{more}"
-        )
-
-    for iid in universe:
-        if iid in unreliable:
-            memo[iid] = PathResult(
-                item_id=iid,
-                action="sell_raw",
-                value_per_unit=prices.get(iid, 0.0) * tax_rate,
-                steps=(),
-                process_types=(),
-                bonus_upside_per_unit=0.0,
-            )
-        else:
-            memo[iid] = PathResult(
-                item_id=iid,
-                action=action[iid],
-                value_per_unit=value[iid],
-                steps=steps[iid],
-                process_types=process_types[iid],
-                bonus_upside_per_unit=bonus_upside[iid],
-            )
+    return _SweepResult(
+        value=value,
+        action=action,
+        steps=steps,
+        process_types=process_types,
+        bonus_upside=bonus_upside,
+        still_changing=still_changing,
+        chosen_edge=chosen_edge,
+        universe=universe,
+    )
 
 
 def _evaluate_edge_relaxed(
