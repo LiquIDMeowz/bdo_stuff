@@ -58,3 +58,41 @@ def test_build_explain_sell_raw_item_has_no_steps():
     result = build_explain(1, 5.0, [MAKE2, MAKE3], prices, {}, tax_rate=1.0)
     assert result.steps == ()
     assert result.processed_total == result.raw_sell_total == 5000.0
+
+
+# A genuine positive-gain cycle (20 <-> 21, 10x each way -- both edges get
+# excluded by the forward solver), plus an unrelated item 30 whose recipe
+# uses item 20 as a side ingredient. item 20 could ALSO be "crafted" via the
+# excluded cycle edge for an artificially cheap 10/unit (1x item21 @ 100 ->
+# 10x item20) versus its real market price of 100/unit -- if the exclusion
+# from solving item 21 isn't carried into the later call for item 30, this
+# cheap-but-bad option would wrongly get recommended.
+CYCLE_A = ConversionEdge(20, "A to B", "Grinding", 0, ((20, 1.0),), (YieldRange(21, 10.0, 10.0),))
+CYCLE_B = ConversionEdge(21, "B to A", "Grinding", 0, ((21, 1.0),), (YieldRange(20, 10.0, 10.0),))
+SIDE_USER = ConversionEdge(
+    22, "Make Widget", "Heating", 0, ((30, 1.0), (20, 2.0)), (YieldRange(31, 1.0, 1.0),)
+)
+
+
+def test_build_explain_shares_excluded_edges_across_calls_with_a_shared_memo():
+    prices = {20: 100.0, 21: 100.0, 30: 10.0, 31: 100_000.0}
+    edges = [CYCLE_A, CYCLE_B, SIDE_USER]
+    memo = {}
+    acq_memo = {}
+    excluded_edges = set()
+
+    # First call solves the whole graph (including the 20<->21 cycle) and
+    # populates the shared memo/excluded_edges.
+    build_explain(21, 1.0, edges, prices, {}, tax_rate=1.0, memo=memo, acq_memo=acq_memo, excluded_edges=excluded_edges)
+    assert CYCLE_B in excluded_edges
+
+    # Second call, for an unrelated item, reuses that same memo/excluded_edges
+    # -- item 30 doesn't trigger a fresh _solve_all (already memoized), so the
+    # exclusion must come from the shared state, not a fresh solve.
+    result = build_explain(
+        30, 5.0, edges, prices, {}, tax_rate=1.0, memo=memo, acq_memo=acq_memo, excluded_edges=excluded_edges
+    )
+    plan, _ = result.steps[0].side_ingredients[0]
+    assert plan.item_id == 20
+    assert plan.method == "buy_market"
+    assert plan.unit_cost == 100.0
