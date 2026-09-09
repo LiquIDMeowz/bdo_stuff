@@ -125,6 +125,15 @@ def test_diverging_positive_gain_cycle_falls_back_to_sell_raw(capsys):
     assert "WARNING" in capsys.readouterr().out
 
 
+def test_excluded_edges_out_is_populated_with_stripped_culprits():
+    edges_by_input = build_edges_by_input([A_TO_B_GAIN, B_TO_A_GAIN])
+    prices = {9001: 100.0, 9002: 100.0}
+    memo = {}
+    excluded: set = set()
+    best_path_value(9001, edges_by_input, prices, {}, 0.65, memo, excluded_edges_out=excluded)
+    assert excluded == {A_TO_B_GAIN, B_TO_A_GAIN}
+
+
 def test_diverging_cycle_does_not_contaminate_an_unrelated_stable_chain():
     # Confirmed on real data: a diverging cycle in one part of the graph
     # (e.g. a niche boss-crystal sub-economy) was previously sweeping
@@ -267,6 +276,13 @@ def test_prefers_processing_when_it_pays_more_than_raw_sale():
     result = best_path_value(1, edges_by_input, prices, {}, tax_rate=0.65, memo={})
     assert result.action != "sell_raw"
     assert result.value_per_unit == 520.0
+
+
+def test_edge_chain_carries_the_actual_recipes_used_in_order():
+    edges_by_input = build_edges_by_input([LOG_TO_PLANK, PLANK_TO_TIMBER])
+    prices = {1: 10.0, 2: 200.0, 3: 5000.0}
+    result = best_path_value(1, edges_by_input, prices, {}, tax_rate=0.65, memo={})
+    assert result.edge_chain == (LOG_TO_PLANK, PLANK_TO_TIMBER)
 
 
 def test_prefers_raw_sale_when_processing_loses_value():

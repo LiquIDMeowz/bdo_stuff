@@ -11,6 +11,7 @@ class PathResult:
     steps: tuple[str, ...]
     process_types: tuple[str, ...]
     bonus_upside_per_unit: float = 0.0
+    edge_chain: tuple[ConversionEdge, ...] = ()
 
 
 def build_edges_by_input(edges: list[ConversionEdge]) -> dict[int, list[ConversionEdge]]:
@@ -18,6 +19,14 @@ def build_edges_by_input(edges: list[ConversionEdge]) -> dict[int, list[Conversi
     for edge in edges:
         for item_id, _qty in edge.inputs:
             graph.setdefault(item_id, []).append(edge)
+    return graph
+
+
+def build_edges_by_output(edges: list[ConversionEdge]) -> dict[int, list[ConversionEdge]]:
+    graph: dict[int, list[ConversionEdge]] = {}
+    for edge in edges:
+        for out in edge.base_outputs:
+            graph.setdefault(out.item_id, []).append(edge)
     return graph
 
 
@@ -108,6 +117,103 @@ def acquisition_cost(
     return min(candidates) if candidates else float("inf")
 
 
+@dataclass
+class AcquisitionPlan:
+    """Cheapest way to get one unit of an item: buy it, or craft it from its
+    own cheapest-acquired ingredients, recursively."""
+
+    item_id: int
+    unit_cost: float
+    method: str  # "buy_market", "buy_npc", "craft", or "unavailable"
+    recipe_name: str | None = None
+    process_type: str | None = None
+    recipe_id: int | None = None
+    yield_expected: float | None = None
+    inputs: tuple[tuple["AcquisitionPlan", float], ...] = ()
+
+
+def cheapest_acquisition_plan(
+    item_id: int,
+    edges_by_output: dict[int, list[ConversionEdge]],
+    prices: dict[int, float],
+    npc_prices: dict[int, float],
+    memo: dict[int, AcquisitionPlan],
+    excluded_edges: frozenset[ConversionEdge] = frozenset(),
+    visiting: frozenset[int] = frozenset(),
+) -> AcquisitionPlan:
+    """Cheapest way to acquire one unit of ``item_id``: buy it outright, or
+    craft it from its own cheapest-acquired inputs (recursively).
+
+    This is the mirror image of ``best_path_value``: that finds the best
+    value from processing an item *forward* toward a sale; this finds the
+    cheapest way to *create* an item from scratch. A recipe with a wrong,
+    too-generous yield ratio makes crafting look artificially cheap here,
+    the same way it makes processing look artificially valuable in the
+    forward direction -- so callers should pass the same ``excluded_edges``
+    the forward solver already identified as bad, rather than re-deriving
+    trust independently.
+
+    A buy-vs-craft cycle (item A's only recipe needs B, B's only recipe
+    needs A) is broken by falling back to a plain buy price whenever a
+    node is revisited mid-recursion, so this always terminates -- mirrors
+    the forward solver falling back to a raw sale on a genuine cycle.
+    """
+    if item_id in memo:
+        return memo[item_id]
+
+    market_price = prices.get(item_id)
+    npc_price = npc_prices.get(item_id)
+    buy_cost = float("inf")
+    buy_method = "unavailable"
+    if market_price:  # a market price of 0 means no active listings, not free
+        buy_cost = market_price
+        buy_method = "buy_market"
+    if npc_price is not None and npc_price < buy_cost:
+        buy_cost = npc_price
+        buy_method = "buy_npc"
+
+    best_plan = AcquisitionPlan(item_id, buy_cost, buy_method)
+
+    if item_id in visiting:
+        return best_plan
+
+    for edge in edges_by_output.get(item_id, []):
+        if edge in excluded_edges:
+            continue
+        out = next((o for o in edge.base_outputs if o.item_id == item_id), None)
+        if out is None or out.expected_qty <= 0:
+            continue
+        sub_plans: list[tuple[AcquisitionPlan, float]] = []
+        total_input_cost = 0.0
+        valid = True
+        for in_id, in_qty in edge.inputs:
+            sub_plan = cheapest_acquisition_plan(
+                in_id, edges_by_output, prices, npc_prices, memo, excluded_edges, visiting | {item_id}
+            )
+            if sub_plan.unit_cost == float("inf"):
+                valid = False
+                break
+            sub_plans.append((sub_plan, in_qty))
+            total_input_cost += sub_plan.unit_cost * in_qty
+        if not valid:
+            continue
+        candidate_cost = total_input_cost / out.expected_qty
+        if candidate_cost < best_plan.unit_cost:
+            best_plan = AcquisitionPlan(
+                item_id,
+                candidate_cost,
+                "craft",
+                recipe_name=edge.name,
+                process_type=edge.process_type,
+                recipe_id=edge.recipe_id,
+                yield_expected=out.expected_qty,
+                inputs=tuple(sub_plans),
+            )
+
+    memo[item_id] = best_plan
+    return best_plan
+
+
 def apply_bonus_rate_overrides(
     edges: list[ConversionEdge], rates: dict[int, float]
 ) -> list[ConversionEdge]:
@@ -142,6 +248,7 @@ def best_path_value(
     tax_rate: float,
     memo: dict[int, PathResult],
     visiting: frozenset[int] = frozenset(),
+    excluded_edges_out: set[ConversionEdge] | None = None,
 ) -> PathResult:
     """Best value obtainable from one unit of ``item_id``.
 
@@ -151,9 +258,14 @@ def best_path_value(
 
     The whole graph is solved at once on the first call and cached in ``memo``;
     subsequent calls sharing that ``memo`` are dictionary lookups.
+
+    ``excluded_edges_out``, if given, is populated with whichever recipes the
+    divergence guard had to strip out as bad data -- callers that also need
+    to reason about the graph in the *other* direction (e.g. cheapest
+    acquisition cost) can reuse this instead of re-deriving trust.
     """
     if item_id not in memo:
-        _solve_all(edges_by_input, prices, npc_prices, tax_rate, memo)
+        _solve_all(edges_by_input, prices, npc_prices, tax_rate, memo, excluded_edges_out=excluded_edges_out)
     if item_id in memo:
         return memo[item_id]
     # Item is not part of the conversion graph at all -- only option is a raw sale.
@@ -176,6 +288,7 @@ def _solve_all(
     memo: dict[int, PathResult],
     max_iters: int = 50,
     epsilon: float = 1e-6,
+    excluded_edges_out: set[ConversionEdge] | None = None,
 ) -> None:
     """Gauss-Seidel fixed-point relaxation over the whole conversion graph.
 
@@ -262,6 +375,9 @@ def _solve_all(
             f"{MAX_DIVERGENCE_RETRIES} rounds of stripping culprit recipes"
         )
 
+    if excluded_edges_out is not None:
+        excluded_edges_out.update(excluded_edges)
+
     if excluded_edges:
         culprit_names = sorted({f"{e.process_type}: {e.name}" for e in excluded_edges})
         print(
@@ -300,7 +416,29 @@ def _solve_all(
                 steps=result.steps[iid],
                 process_types=result.process_types[iid],
                 bonus_upside_per_unit=result.bonus_upside[iid],
+                edge_chain=_reconstruct_edge_chain(iid, result.chosen_edge),
             )
+
+
+def _reconstruct_edge_chain(
+    item_id: int, chosen_edge: dict[int, ConversionEdge | None]
+) -> tuple[ConversionEdge, ...]:
+    """Walk ``chosen_edge`` from ``item_id`` to build the actual sequence of
+    recipes used, matching the ``steps``/``action`` strings but as real
+    ``ConversionEdge`` objects a caller can inspect (full ingredient list,
+    quantities, mastery) rather than just names.
+    """
+    chain: list[ConversionEdge] = []
+    node: int | None = item_id
+    seen: set[int] = set()
+    while node is not None and node not in seen:
+        seen.add(node)
+        edge = chosen_edge.get(node)
+        if edge is None:
+            break
+        chain.append(edge)
+        node = edge.base_outputs[0].item_id if edge.base_outputs else None
+    return tuple(chain)
 
 
 def _find_culprit_edges(

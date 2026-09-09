@@ -118,6 +118,45 @@ def test_sell_raw_result_survives_category_filter(tmp_path: Path, capsys):
     assert "sell_raw" in csv_text
 
 
+def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: Path, capsys):
+    paths = _common_paths(tmp_path)
+    edges = [
+        ConversionEdge(
+            recipe_id=1,
+            name="Melted Iron Shard",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((4001, 5.0),),
+            base_outputs=(YieldRange(4051, 2.0, 2.0),),
+        ),
+        ConversionEdge(
+            recipe_id=2,
+            name="Iron Ingot",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((4051, 2.0), (9999, 1.0)),
+            base_outputs=(YieldRange(4052, 1.0, 1.0),),
+        ),
+    ]
+    fake_prices = {
+        4001: _snapshot(4001, "Iron Ore", 100.0),
+        4051: _snapshot(4051, "Melted Iron Shard", 1.0),  # near-worthless raw -> processing wins
+        4052: _snapshot(4052, "Iron Ingot", 10_000.0),
+        9999: _snapshot(9999, "Flux", 50.0),
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        _run(paths, ["--explain", "4001", "--qty", "20"])
+
+    out = capsys.readouterr().out
+    assert "Iron Ore" in out
+    assert "Melted Iron Shard" in out
+    assert "Iron Ingot" in out
+    assert "Flux" in out  # side ingredient shown, not just the main chain
+    assert "BUY" in out  # Flux has no recipe -> must be bought
+
+
 def test_price_cache_is_saved_incrementally_not_only_at_the_end(tmp_path: Path):
     """If the process is killed mid-run (timeout, crash), prices fetched so
     far must already be on disk -- not lost by only saving once at the end."""
