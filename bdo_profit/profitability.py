@@ -98,7 +98,10 @@ def category_reachable_items(
 
 
 def acquisition_cost(
-    item_id: int, prices: dict[int, float], npc_prices: dict[int, float]
+    item_id: int,
+    prices: dict[int, float],
+    npc_prices: dict[int, float],
+    stocks: dict[int, float] | None = None,
 ) -> float:
     """Cheapest way to acquire one unit of ``item_id``, market or NPC.
 
@@ -107,8 +110,19 @@ def acquisition_cost(
     it as a real, cheaper-than-NPC price silently inflated any recipe that
     happened to use an out-of-stock ingredient. NPC prices are hand-entered
     real purchase costs, so they aren't filtered the same way.
+
+    ``stocks``, when given, applies the same logic to a real but stale
+    price: confirmed by the user that an item can carry a genuine nonzero
+    last-sale price while currently having zero sell listings (e.g. Bottle
+    of Sea Water -- trivially self-gatherable, so nobody bothers listing
+    it) -- relying on "just buy it" is unrealistic there even though a
+    price exists. Missing stock data for an item (not fetched) doesn't
+    penalize it -- only a confirmed zero does. NPC vendors have
+    effectively infinite stock by design, so an NPC price is unaffected.
     """
     market_price = prices.get(item_id)
+    if stocks is not None and stocks.get(item_id) == 0:
+        market_price = None
     candidates = [
         c
         for c in (market_price if market_price else None, npc_prices.get(item_id))
@@ -170,11 +184,12 @@ def cheapest_acquisition_plan(
         return memo[item_id]
 
     market_price = prices.get(item_id)
+    zero_stock = stocks.get(item_id) == 0
     npc_price = npc_prices.get(item_id)
     buy_cost = float("inf")
     buy_method = "unavailable"
-    if market_price:  # a market price of 0 means no active listings, not free
-        buy_cost = market_price
+    if market_price and not zero_stock:  # a price of 0, or zero current sell
+        buy_cost = market_price          # listings, both mean "not really buyable"
         buy_method = "buy_market"
     if npc_price is not None and npc_price < buy_cost:
         buy_cost = npc_price
@@ -261,6 +276,7 @@ def best_path_value(
     memo: dict[int, PathResult],
     visiting: frozenset[int] = frozenset(),
     excluded_edges_out: set[ConversionEdge] | None = None,
+    stocks: dict[int, float] | None = None,
 ) -> PathResult:
     """Best value obtainable from one unit of ``item_id``.
 
@@ -275,9 +291,19 @@ def best_path_value(
     divergence guard had to strip out as bad data -- callers that also need
     to reason about the graph in the *other* direction (e.g. cheapest
     acquisition cost) can reuse this instead of re-deriving trust.
+
+    ``stocks``, when given, keeps a zero-stock ingredient from being treated
+    as buyable anywhere in the graph (see ``acquisition_cost``) -- confirmed
+    by the user this matters for what gets chosen as "best", not just for
+    warning about it after the fact: a chain that only pencils out through
+    an ingredient nobody is currently selling should lose to a shorter,
+    actually-achievable one.
     """
     if item_id not in memo:
-        _solve_all(edges_by_input, prices, npc_prices, tax_rate, memo, excluded_edges_out=excluded_edges_out)
+        _solve_all(
+            edges_by_input, prices, npc_prices, tax_rate, memo,
+            excluded_edges_out=excluded_edges_out, stocks=stocks,
+        )
     if item_id in memo:
         return memo[item_id]
     # Item is not part of the conversion graph at all -- only option is a raw sale.
@@ -301,6 +327,7 @@ def _solve_all(
     max_iters: int = 50,
     epsilon: float = 1e-6,
     excluded_edges_out: set[ConversionEdge] | None = None,
+    stocks: dict[int, float] | None = None,
 ) -> None:
     """Gauss-Seidel fixed-point relaxation over the whole conversion graph.
 
@@ -358,7 +385,7 @@ def _solve_all(
     result = None
     for _ in range(MAX_DIVERGENCE_RETRIES):
         result = _solve_all_pass(
-            edges_by_input, prices, npc_prices, tax_rate, max_iters, epsilon, excluded_edges
+            edges_by_input, prices, npc_prices, tax_rate, max_iters, epsilon, excluded_edges, stocks
         )
         implausible = {
             iid for iid in result.universe if abs(result.value[iid]) > MAX_PLAUSIBLE_VALUE
@@ -557,6 +584,7 @@ def _solve_all_pass(
     max_iters: int,
     epsilon: float,
     excluded_edges: frozenset[ConversionEdge],
+    stocks: dict[int, float] | None = None,
 ) -> _SweepResult:
     all_edges: set[ConversionEdge] = {
         edge for edges in edges_by_input.values() for edge in edges
@@ -592,7 +620,7 @@ def _solve_all_pass(
                 if edge in excluded_edges:
                     continue
                 candidate = _evaluate_edge_relaxed(
-                    edge, iid, value, action, steps, process_types, prices, npc_prices
+                    edge, iid, value, action, steps, process_types, prices, npc_prices, stocks
                 )
                 if candidate is not None and candidate[0] > best_value:
                     best_value, best_action, best_steps, best_types, best_upside = candidate
@@ -630,13 +658,14 @@ def _evaluate_edge_relaxed(
     process_types: dict[int, tuple[str, ...]],
     prices: dict[int, float],
     npc_prices: dict[int, float],
+    stocks: dict[int, float] | None = None,
 ) -> tuple[float, str, tuple[str, ...], tuple[str, ...], float] | None:
     target_qty = next((qty for iid, qty in edge.inputs if iid == target_item_id), None)
     if not target_qty:
         return None
 
     other_cost = sum(
-        acquisition_cost(iid, prices, npc_prices) * qty
+        acquisition_cost(iid, prices, npc_prices, stocks) * qty
         for iid, qty in edge.inputs
         if iid != target_item_id
     )

@@ -181,7 +181,7 @@ def main(argv: list[str] | None = None) -> None:
 
     memo: dict[int, PathResult] = {}
     results = [
-        best_path_value(item_id, edges_by_input, prices, npc_prices, args.tax_rate, memo)
+        best_path_value(item_id, edges_by_input, prices, npc_prices, args.tax_rate, memo, stocks=stocks)
         for item_id in raw_material_ids
     ]
 

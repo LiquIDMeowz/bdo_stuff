@@ -76,9 +76,10 @@ def build_explain(
     # result already memoized and skips _solve_all entirely, but the set
     # still holds what got populated that first time.
     excluded_edges = excluded_edges if excluded_edges is not None else set()
+    stocks = stocks or {}
     result = best_path_value(
         item_id, edges_by_input, prices, npc_prices, tax_rate, memo,
-        excluded_edges_out=excluded_edges,
+        excluded_edges_out=excluded_edges, stocks=stocks,
     )
 
     raw_sell_total = prices.get(item_id, 0.0) * tax_rate * qty
@@ -87,7 +88,6 @@ def build_explain(
         return ExplainResult(item_id, qty, raw_sell_total, raw_sell_total, (), 0.0, result)
 
     frozen_excluded = frozenset(excluded_edges)
-    stocks = stocks or {}
     steps: list[ExplainStep] = []
     current_item = item_id
     current_qty = qty

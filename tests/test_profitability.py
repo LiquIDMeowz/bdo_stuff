@@ -259,6 +259,20 @@ def test_acquisition_cost_treats_zero_market_price_as_unavailable():
     assert acquisition_cost(1, {1: 0.0}, {1: 700.0}) == 700.0
 
 
+def test_acquisition_cost_treats_zero_stock_as_unavailable_even_with_a_real_price():
+    # Confirmed by the user: an item can have a real, nonzero last-sale
+    # price with zero current sell listings (e.g. Bottle of Sea Water --
+    # trivially self-gatherable, so nobody bothers listing it). Relying on
+    # "buy it" is unrealistic even though a price exists. NPC vendors have
+    # effectively infinite stock by design, so an NPC price is unaffected.
+    assert acquisition_cost(1, {1: 5550.0}, {}, stocks={1: 0}) == float("inf")
+    assert acquisition_cost(1, {1: 5550.0}, {1: 20.0}, stocks={1: 0}) == 20.0
+    assert acquisition_cost(1, {1: 5550.0}, {}, stocks={1: 12}) == 5550.0
+    # No stock info at all for this item -> don't penalize it (stock data
+    # may simply not have been fetched), same as today's behavior.
+    assert acquisition_cost(1, {1: 5550.0}, {}, stocks={}) == 5550.0
+
+
 def test_sell_raw_when_no_processing_beats_selling():
     edges_by_input = build_edges_by_input([])
     prices = {1: 100.0}

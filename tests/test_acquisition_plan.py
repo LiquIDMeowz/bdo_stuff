@@ -99,6 +99,25 @@ def test_buy_market_plan_carries_available_stock():
     assert plan.available_stock == 12
 
 
+def test_zero_stock_item_is_not_offered_as_buyable():
+    # Confirmed by the user: an ingredient with zero current sell listings
+    # (e.g. Bottle of Sea Water -- trivially self-gatherable, so nobody
+    # bothers listing it) shouldn't be recommended as "just buy it" even
+    # though a real last-sale price exists -- it's not achievable right
+    # now. Falls back to NPC if available, else "unavailable".
+    edges_by_output = build_edges_by_output([])
+    memo = {}
+    plan = cheapest_acquisition_plan(300, edges_by_output, {300: 5550.0}, {}, memo, stocks={300: 0})
+    assert plan.method == "unavailable"
+
+    memo2 = {}
+    plan2 = cheapest_acquisition_plan(
+        301, edges_by_output, {301: 5550.0}, {301: 20.0}, memo2, stocks={301: 0}
+    )
+    assert plan2.method == "buy_npc"
+    assert plan2.unit_cost == 20.0
+
+
 def test_excluded_edges_are_skipped():
     # The craft-cheaper recipe would normally win, but if it's a known-bad
     # recipe (already excluded by the forward divergence guard), it must be

@@ -142,7 +142,7 @@ def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: P
         4001: _snapshot(4001, "Iron Ore", 100.0),
         4051: _snapshot(4051, "Melted Iron Shard", 1.0),  # near-worthless raw -> processing wins
         4052: _snapshot(4052, "Iron Ingot", 10_000.0),
-        9999: _snapshot(9999, "Flux", 50.0),
+        9999: _snapshot(9999, "Flux", 50.0, current_stock=500),  # real stock -> actually buyable
     }
 
     with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
@@ -154,6 +154,47 @@ def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: P
     assert "Melted Iron Shard" in out
     assert "Iron Ingot" in out
     assert "Flux" in out  # side ingredient shown, not just the main chain
+
+
+def test_explain_excludes_a_chain_that_needs_a_zero_stock_ingredient(tmp_path: Path, capsys):
+    # Confirmed by the user: an ingredient with zero current sell listings
+    # (e.g. Bottle of Sea Water -- trivially self-gatherable, nobody bothers
+    # listing it) shouldn't just be warned about -- a chain that only wins
+    # through it must lose to a shorter, actually-achievable one.
+    paths = _common_paths(tmp_path)
+    edges = [
+        ConversionEdge(
+            recipe_id=1,
+            name="Melted Iron Shard",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((4001, 5.0),),
+            base_outputs=(YieldRange(4051, 2.0, 2.0),),
+        ),
+        ConversionEdge(
+            recipe_id=2,
+            name="Iron Ingot",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((4051, 2.0), (9999, 1.0)),
+            base_outputs=(YieldRange(4052, 1.0, 1.0),),
+        ),
+    ]
+    fake_prices = {
+        4001: _snapshot(4001, "Iron Ore", 100.0),
+        4051: _snapshot(4051, "Melted Iron Shard", 1.0),
+        4052: _snapshot(4052, "Iron Ingot", 10_000.0),
+        9999: _snapshot(9999, "Flux", 50.0, current_stock=0),  # zero stock -> unavailable
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        _run(paths, ["--explain", "4001", "--qty", "20"])
+
+    out = capsys.readouterr().out
+    assert "Iron Ore" in out
+    assert "sell raw" in out
+    assert "Iron Ingot" not in out
 
 
 def test_explain_warns_when_needed_quantity_exceeds_current_sell_listings(tmp_path: Path, capsys):
