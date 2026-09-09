@@ -74,6 +74,36 @@ SIDE_USER = ConversionEdge(
 )
 
 
+# item40 (raw) --Make41From43--> nothing yet; item41 is buyable directly
+# (1000/unit, stock 1000) OR craftable from item43 (5x, 10/unit -> 50/unit,
+# way cheaper) -- but item43 only has 2 in stock, nowhere near enough for
+# the volume this recipe needs. Make42 spends item40 (spine) + item41
+# (side) on item42, a valuable final sale.
+MAKE41_FROM_43 = ConversionEdge(
+    50, "Make41", "Heating", 0, ((43, 5.0),), (YieldRange(41, 1.0, 1.0),)
+)
+MAKE42 = ConversionEdge(
+    51, "Make42", "Heating", 0, ((40, 1.0), (41, 1.0)), (YieldRange(42, 1.0, 1.0),)
+)
+
+
+def test_build_explain_falls_back_when_the_cheaper_craft_path_is_far_understocked():
+    prices = {40: 5.0, 41: 1000.0, 42: 100_000.0, 43: 10.0}
+    stocks = {41: 1000, 43: 2}
+    result = build_explain(
+        40, 100.0, [MAKE41_FROM_43, MAKE42], prices, {}, tax_rate=1.0, stocks=stocks
+    )
+    step = result.steps[0]
+    plan, total_needed = step.side_ingredients[0]
+    assert plan.item_id == 41
+    assert total_needed == 100.0
+    # Crafting via item43 would be far cheaper (50/unit vs 1000/unit), but
+    # item43's stock (2) is nowhere near the ~500 units that path would
+    # need -- must fall back to buying item41 directly instead.
+    assert plan.method == "buy_market"
+    assert plan.unit_cost == 1000.0
+
+
 def test_build_explain_shares_excluded_edges_across_calls_with_a_shared_memo():
     prices = {20: 100.0, 21: 100.0, 30: 10.0, 31: 100_000.0}
     edges = [CYCLE_A, CYCLE_B, SIDE_USER]

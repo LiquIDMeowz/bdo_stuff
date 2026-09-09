@@ -156,6 +156,7 @@ def cheapest_acquisition_plan(
     excluded_edges: frozenset[ConversionEdge] = frozenset(),
     visiting: frozenset[int] = frozenset(),
     stocks: dict[int, float] = {},
+    blocked_market_items: frozenset[int] = frozenset(),
 ) -> AcquisitionPlan:
     """Cheapest way to acquire one unit of ``item_id``: buy it outright, or
     craft it from its own cheapest-acquired inputs (recursively).
@@ -179,17 +180,26 @@ def cheapest_acquisition_plan(
     sell-side listings, not buy orders -- a real price can still exist with
     near-zero stock (nobody currently selling), and a caller recommending a
     large purchase against that needs the stock figure to warn accordingly.
+
+    ``blocked_market_items``, when given, additionally forbids buying those
+    specific items outright (falls through to NPC/craft/unavailable) --
+    unlike the zero-stock check, this isn't decided here: a caller that
+    knows the real quantity needed (this function only ever prices *one*
+    unit) determines which items are too far short of current stock to
+    realistically fill that need, and retries with those blocked so the
+    recursion naturally re-routes to an achievable alternative.
     """
     if item_id in memo:
         return memo[item_id]
 
     market_price = prices.get(item_id)
     zero_stock = stocks.get(item_id) == 0
+    blocked = item_id in blocked_market_items
     npc_price = npc_prices.get(item_id)
     buy_cost = float("inf")
     buy_method = "unavailable"
-    if market_price and not zero_stock:  # a price of 0, or zero current sell
-        buy_cost = market_price          # listings, both mean "not really buyable"
+    if market_price and not zero_stock and not blocked:
+        buy_cost = market_price
         buy_method = "buy_market"
     if npc_price is not None and npc_price < buy_cost:
         buy_cost = npc_price
@@ -215,7 +225,7 @@ def cheapest_acquisition_plan(
         for in_id, in_qty in edge.inputs:
             sub_plan = cheapest_acquisition_plan(
                 in_id, edges_by_output, prices, npc_prices, memo, excluded_edges,
-                visiting | {item_id}, stocks,
+                visiting | {item_id}, stocks, blocked_market_items,
             )
             if sub_plan.unit_cost == float("inf"):
                 valid = False
