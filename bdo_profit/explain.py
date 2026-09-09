@@ -21,6 +21,20 @@ class ExplainStep:
 
 
 @dataclass
+class StopPoint:
+    """The outcome of stopping the chain after a given step and selling
+    whatever you're holding at that point, instead of continuing to
+    process further."""
+
+    step_index: int  # -1 = sell the starting item raw, no processing at all
+    item_id: int  # the item you'd be selling if you stopped here
+    qty_avg: float
+    qty_worst: float
+    value_avg: float
+    value_worst: float
+
+
+@dataclass
 class ExplainResult:
     item_id: int
     qty: float
@@ -30,6 +44,9 @@ class ExplainResult:
     steps: tuple[ExplainStep, ...]
     bonus_upside_total: float
     path_result: PathResult
+    stop_points: tuple[StopPoint, ...] = ()
+    recommended_stop_index: int = -1
+    recommended_stop_value: float = 0.0
 
 
 # Needing more than this many times the current sell-side listings counts as
@@ -65,37 +82,86 @@ def _find_understocked_items(
             _find_understocked_items(sub_plan, batches_needed * sub_qty_per_batch, found)
 
 
-def _compute_worst_case_total(
-    steps: tuple[ExplainStep, ...], qty: float, prices: dict[int, float], tax_rate: float
-) -> float:
-    """Total silver if every hop yields its minimum instead of its average --
-    confirmed by the user (Metal Solvent: profitable on average, a real loss
-    at minimum yield) that average-case math alone hides real risk on
-    thin-margin recipes.
+def _compute_stop_points(
+    steps: tuple[ExplainStep, ...], start_item_id: int, qty: float,
+    prices: dict[int, float], tax_rate: float,
+) -> list[StopPoint]:
+    """The outcome of stopping after each step (including not processing at
+    all) instead of assuming you always push all the way to the end.
 
-    A lower yield at one hop doesn't just cut revenue there -- it means
-    fewer units flow into every hop after it too, so this re-walks the
-    whole chain with its own parallel running quantity rather than just
-    scaling the existing average-case numbers down. Side-ingredient unit
-    costs and sourcing choices are reused as-is from the average-case walk
-    (needing less, not more, so whatever was achievable there remains
-    achievable here); only the quantities are recomputed.
+    Confirmed valuable by the user with a real example (Copper Ore: steps 1
+    and 2 are plain ore smelting with no side ingredients, step 3 pulls in
+    the expensive, risky Metal Solvent) -- a chain can be worth pushing
+    partway through and then selling the intermediate product, even when
+    the *full* chain isn't worth the risk. Every intermediate product in a
+    processing chain is itself a real, sellable item, so "stop here" is
+    always a valid option, not just "all the way" or "not at all".
+
+    Both average and worst-case running quantities are tracked in the same
+    pass (mirrors the two walks previously done separately for
+    ``processed_total``/``worst_case_total``) so every stop point gets
+    both figures.
     """
+    points: list[StopPoint] = []
+    raw_value = prices.get(start_item_id, 0.0) * tax_rate * qty
+    points.append(StopPoint(-1, start_item_id, qty, qty, raw_value, raw_value))
+
+    current_qty_avg = qty
     current_qty_worst = qty
-    total_side_cost = 0.0
-    final_item_id = None
-    for step in steps:
+    cum_side_cost_avg = 0.0
+    cum_side_cost_worst = 0.0
+    current_item_id = start_item_id
+
+    for i, step in enumerate(steps):
         target_qty = step.primary_input_qty / step.batches
+        batches_avg = current_qty_avg / target_qty
         batches_worst = current_qty_worst / target_qty
         primary_out = step.edge.base_outputs[0]
+
         for plan, avg_needed in step.side_ingredients:
             per_batch = avg_needed / step.batches
-            total_side_cost += plan.unit_cost * (batches_worst * per_batch)
-        final_item_id = primary_out.item_id
-        current_qty_worst = batches_worst * primary_out.qty_min
+            cum_side_cost_avg += plan.unit_cost * (batches_avg * per_batch)
+            cum_side_cost_worst += plan.unit_cost * (batches_worst * per_batch)
 
-    final_sell_value = prices.get(final_item_id, 0.0) * tax_rate
-    return current_qty_worst * final_sell_value - total_side_cost
+        current_qty_avg = batches_avg * primary_out.expected_qty
+        current_qty_worst = batches_worst * primary_out.qty_min
+        current_item_id = primary_out.item_id
+
+        sell_value = prices.get(current_item_id, 0.0) * tax_rate
+        value_avg = current_qty_avg * sell_value - cum_side_cost_avg
+        value_worst = current_qty_worst * sell_value - cum_side_cost_worst
+        points.append(
+            StopPoint(i, current_item_id, current_qty_avg, current_qty_worst, value_avg, value_worst)
+        )
+
+    return points
+
+
+def _recommend_stop_point(points: list[StopPoint]) -> StopPoint:
+    """The best stopping point to actually commit to, walking the chain one
+    step at a time and only taking a step if its worst case doesn't risk
+    landing below what's already guaranteed by stopping now.
+
+    Comparing every point's worst case against the raw baseline alone
+    isn't enough: a step whose worst case still beats raw can nonetheless
+    be worse than an already-guaranteed earlier stop (confirmed by the
+    user with a real example -- Copper Ore's ore-smelting steps are safe
+    and profitable on their own, but the next step pulls in expensive,
+    thin-margin Metal Solvent; its worst case might still clear the raw
+    price yet fall well short of what smelting alone already locked in).
+    Since reaching any later step means physically passing through every
+    step before it, the first step that would risk giving back the
+    already-guaranteed value stops the walk there -- a later step looking
+    fine "on paper" doesn't matter if you can't reach it without first
+    accepting that risk.
+    """
+    best_stop = points[0]
+    for point in points[1:]:
+        if point.value_worst >= best_stop.value_avg:
+            best_stop = point
+        else:
+            break
+    return best_stop
 
 
 def build_explain(
@@ -152,7 +218,11 @@ def build_explain(
     raw_sell_total = prices.get(item_id, 0.0) * tax_rate * qty
 
     if result.action == "sell_raw" or not result.edge_chain:
-        return ExplainResult(item_id, qty, raw_sell_total, raw_sell_total, raw_sell_total, (), 0.0, result)
+        only_point = StopPoint(-1, item_id, qty, qty, raw_sell_total, raw_sell_total)
+        return ExplainResult(
+            item_id, qty, raw_sell_total, raw_sell_total, raw_sell_total, (), 0.0, result,
+            stop_points=(only_point,), recommended_stop_index=-1, recommended_stop_value=raw_sell_total,
+        )
 
     frozen_excluded = frozenset(excluded_edges)
     blocked_market_items: frozenset[int] = frozenset()
@@ -205,9 +275,14 @@ def build_explain(
     acq_memo.update(acq_memo_round)
 
     processed_total = result.value_per_unit * qty
-    worst_case_total = _compute_worst_case_total(tuple(steps), qty, prices, tax_rate)
+    stop_points = _compute_stop_points(tuple(steps), item_id, qty, prices, tax_rate)
+    worst_case_total = stop_points[-1].value_worst
+    recommended = _recommend_stop_point(stop_points)
     bonus_upside_total = result.bonus_upside_per_unit * qty
     return ExplainResult(
         item_id, qty, raw_sell_total, processed_total, worst_case_total,
         tuple(steps), bonus_upside_total, result,
+        stop_points=tuple(stop_points),
+        recommended_stop_index=recommended.step_index,
+        recommended_stop_value=recommended.value_avg,
     )

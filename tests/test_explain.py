@@ -33,6 +33,43 @@ MAKE3_FIXED = ConversionEdge(
 )
 
 
+# item1 (raw, 10) --MakeShard (fixed yield 2)--> item2 (100)
+# item2 --MakeIngot (fixed yield 1)--> item3 (1000) -- safe so far, no side cost
+# item3 + 2x item10 (side, 500/unit) --MakeCrystal (yield 1-2, avg 1.5)--> item4 (1600)
+# The crystal step IS worth taking on average (the forward solver picks it:
+# 1.5*1600 - 2*500 = 1400 > item3's raw price of 1000) but its *worst* case
+# (1*1600 - 2*500 = 600/unit) is worse than the 2000 already guaranteed by
+# stopping one step earlier -- so it should still be excluded from the
+# recommended stopping point despite looking attractive on paper.
+MAKE_SHARD = ConversionEdge(
+    70, "MakeShard", "Heating", 0, ((1, 5.0),), (YieldRange(2, 2.0, 2.0),)
+)
+MAKE_INGOT = ConversionEdge(
+    71, "MakeIngot", "Heating", 0, ((2, 3.0),), (YieldRange(3, 1.0, 1.0),)
+)
+MAKE_CRYSTAL = ConversionEdge(
+    72, "MakeCrystal", "Alchemy", 0, ((3, 1.0), (10, 2.0)), (YieldRange(4, 1.0, 2.0),)
+)
+
+
+def test_build_explain_recommends_stopping_before_a_risky_step():
+    prices = {1: 10.0, 2: 100.0, 3: 1000.0, 4: 1600.0, 10: 500.0}
+    result = build_explain(
+        1, 15.0, [MAKE_SHARD, MAKE_INGOT, MAKE_CRYSTAL], prices, {}, tax_rate=1.0
+    )
+    # step index 1 = after MakeShard (0) and MakeIngot (1), selling item3 --
+    # the best point that's still safe at worst-case yield.
+    assert result.recommended_stop_index == 1
+    assert result.recommended_stop_value == 2000.0
+
+    points = {p.step_index: p for p in result.stop_points}
+    assert points[-1].value_avg == 150.0  # sell item1 raw
+    assert points[0].value_avg == 600.0  # sell item2 (after MakeShard)
+    assert points[1].value_avg == 2000.0  # sell item3 (after MakeIngot) -- recommended
+    assert points[2].value_avg == 2800.0  # push through MakeCrystal -- better on average...
+    assert points[2].value_worst == 1200.0  # ...but worst case gives back the guaranteed 2000
+
+
 def test_build_explain_computes_worst_case_total_using_minimum_yield():
     # Confirmed by the user (Metal Solvent: profitable on average, a real
     # loss at minimum yield) that average-case math alone hides real risk.
