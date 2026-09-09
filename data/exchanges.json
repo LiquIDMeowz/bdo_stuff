@@ -1,0 +1,9 @@
+[
+  {
+    "recipe_id": -1001,
+    "name": "Liana Exchange: Witch's Delicacy -> Milk",
+    "npc": "Liana (Velia)",
+    "inputs": [[9780, 10]],
+    "outputs": [[9065, 120]]
+  }
+]

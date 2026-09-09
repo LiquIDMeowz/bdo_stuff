@@ -51,10 +51,16 @@ def _common_paths(tmp_path: Path) -> dict:
     npc_path.write_text("{}")
     bonus_path = tmp_path / "bonus.yaml"
     bonus_path.write_text("")
+    exchanges_path = tmp_path / "exchanges.json"
+    exchanges_path.write_text("[]")
+    universal_procs_path = tmp_path / "universal_procs.json"
+    universal_procs_path.write_text("{}")
     return {
         "cache_path": tmp_path / "cache.json",
         "npc_path": npc_path,
         "bonus_path": bonus_path,
+        "exchanges_path": exchanges_path,
+        "universal_procs_path": universal_procs_path,
         "csv_path": tmp_path / "out.csv",
         "price_cache_path": tmp_path / "prices.json",
     }
@@ -67,6 +73,8 @@ def _run(paths: dict, extra_args: list[str] | None = None) -> None:
             "--cache-path", str(paths["cache_path"]),
             "--npc-prices-path", str(paths["npc_path"]),
             "--bonus-rates-path", str(paths["bonus_path"]),
+            "--exchanges-path", str(paths["exchanges_path"]),
+            "--universal-procs-path", str(paths["universal_procs_path"]),
             "--csv", str(paths["csv_path"]),
             "--top", "5",
             "--price-cache-path", str(paths["price_cache_path"]),
@@ -160,6 +168,50 @@ def test_sources_lists_every_acquisition_option_sorted_by_cost(tmp_path: Path, c
     # must be listed before the more expensive options.
     assert out.index("CraftTraceA") < out.index("CraftTraceB")
     assert out.index("CraftTraceA") < out.index("BUY (market)")
+
+
+def test_sources_includes_universal_proc_farming_via_exchange(tmp_path: Path, capsys):
+    # Confirmed by the user: any Cooking action has a ~2% chance at Witch's
+    # Delicacy (item 9780), tradeable at NPC Liana for Milk (item 9065) at
+    # 10:120. Farming the cheapest Cooking recipe for this should show up
+    # as one of Milk's acquisition sources, priced by expected attempts.
+    paths = _common_paths(tmp_path)
+    paths["exchanges_path"].write_text(
+        '[{"recipe_id": -1001, "name": "Liana Exchange", '
+        '"inputs": [[9780, 10]], "outputs": [[9065, 120]]}]'
+    )
+    paths["universal_procs_path"].write_text(
+        '{"Cooking": {"item_id": 9780, "item_name": "Witch\'s Delicacy", '
+        '"chance": 0.02, "qty": 1}}'
+    )
+    edges = [
+        ConversionEdge(
+            recipe_id=1,
+            name="Cheap Stew",
+            process_type="Cooking",
+            mastery_required=0,
+            inputs=((7001, 1.0),),
+            base_outputs=(YieldRange(7002, 1.0, 1.0),),
+        ),
+    ]
+    fake_prices = {
+        7001: _snapshot(7001, "Filler Ingredient", 10.0, current_stock=1000),
+        7002: _snapshot(7002, "Worthless Dish", 0.0),
+        9065: _snapshot(9065, "Milk", 23300.0, current_stock=10000),
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        _run(paths, ["--sources", "9065", "--tax-rate", "1.0"])
+
+    out = capsys.readouterr().out
+    assert "Sources for Milk" in out
+    assert "Liana Exchange" in out
+    assert "BUY (market)" in out
+    # Farming: net cost/attempt = 10 (ingredient) - 0 (worthless dish) = 10,
+    # / 0.02 chance = 500/proc, * 10 procs needed / 120 milk = ~41.7/unit --
+    # far cheaper than Milk's real 23,300 market price, so it must rank first.
+    assert out.index("Liana Exchange") < out.index("BUY (market)")
 
 
 def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: Path, capsys):

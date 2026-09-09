@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from bdo_profit import cache, config, price_cache
+from bdo_profit.bottleneck import inject_universal_proc_costs
 from bdo_profit.explain import ExplainResult, build_explain
 from bdo_profit.market_client import MarketClient
 from bdo_profit.profitability import (
@@ -31,6 +32,8 @@ CATEGORY_PROCESS_TYPES = {
 DEFAULT_CACHE_PATH = Path("data/recipes_cache.json")
 DEFAULT_BONUS_PATH = Path("config/bonus_proc_rates.yaml")
 DEFAULT_NPC_PATH = Path("data/npc_prices.json")
+DEFAULT_EXCHANGES_PATH = Path("data/exchanges.json")
+DEFAULT_UNIVERSAL_PROCS_PATH = Path("data/universal_procs.json")
 DEFAULT_PRICE_CACHE_PATH = Path("data/price_cache.json")
 DEFAULT_PRICE_CACHE_TTL = 302400.0  # 3.5 days -- most item prices barely move week to week
 # 0.65 (35% base tax) * 1.30 (Value Pack bonus) = 0.845, + 0.005 current family fame bonus.
@@ -57,6 +60,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-path", type=Path, default=DEFAULT_CACHE_PATH)
     parser.add_argument("--bonus-rates-path", type=Path, default=DEFAULT_BONUS_PATH)
     parser.add_argument("--npc-prices-path", type=Path, default=DEFAULT_NPC_PATH)
+    parser.add_argument(
+        "--exchanges-path",
+        type=Path,
+        default=DEFAULT_EXCHANGES_PATH,
+        help="Hand-maintained fixed-ratio NPC exchange conversions (e.g. Liana's "
+        "Witch's Delicacy -> Milk trade), merged into the recipe graph as edges.",
+    )
+    parser.add_argument(
+        "--universal-procs-path",
+        type=Path,
+        default=DEFAULT_UNIVERSAL_PROCS_PATH,
+        help="Hand-maintained per-process_type universal proc chances (e.g. "
+        "Cooking's ~2%% Witch's Delicacy chance on any recipe), used to price "
+        "farming that item as a synthetic NPC cost.",
+    )
     parser.add_argument("--price-cache-path", type=Path, default=DEFAULT_PRICE_CACHE_PATH)
     parser.add_argument(
         "--price-cache-ttl",
@@ -128,6 +146,8 @@ def main(argv: list[str] | None = None) -> None:
     npc_prices = config.load_npc_prices(args.npc_prices_path)
     bonus_rates = config.load_bonus_proc_rates(args.bonus_rates_path)
     edges = apply_bonus_rate_overrides(edges, bonus_rates)
+    edges = edges + cache.load_exchanges(args.exchanges_path)
+    universal_procs = config.load_universal_procs(args.universal_procs_path)
 
     raw_material_ids = identify_raw_materials(edges)
     edges_by_input = build_edges_by_input(edges)
@@ -193,6 +213,10 @@ def main(argv: list[str] | None = None) -> None:
             f"(API errors or no market data) -- affected items excluded from pricing"
         )
     price_cache.save_price_cache(disk_price_cache, args.price_cache_path)
+
+    npc_prices = inject_universal_proc_costs(
+        universal_procs, edges, prices, npc_prices, args.tax_rate, stocks=stocks
+    )
 
     if args.explain is not None:
         explain_result = build_explain(
