@@ -76,6 +76,50 @@ def test_parse_row_merges_duplicate_input_item_ids():
     assert edge.inputs == ((4999, 1.0), (16001, 2.0))
 
 
+def test_scrape_processing_recipes_skips_known_bad_recipe_with_reason(capsys):
+    # Real bdocodex recipe 241, "Grinding: Black Stone", lists 2x Sharp Black
+    # Crystal Shard -> 5x Black Stone -- verified live against bdocodex.com,
+    # not a scraping error. Combined with recipe 2382 (which needs 1x Black
+    # Stone as an ingredient to make Shards), this forms a genuine ~25x
+    # positive-gain cycle: 2 Shards -> 5 Stones -> 25 Shards -> ... with no
+    # fixed point, which produced a real 6.57e94-silver result on live data
+    # before this exclusion. Almost certainly a data entry error on
+    # bdocodex's side (the ratio is backwards from how BDO grinding/refining
+    # normally works -- consuming more than it yields of a higher tier, not
+    # less), not something fixable by correcting our own parsing.
+    from unittest.mock import MagicMock, patch
+    from bdo_profit.scraper.bdocodex import scrape_processing_recipes
+
+    bad_row = [
+        241,
+        "<div class=\"iconset_wrapper_big\"><a href=\"/us/mrecipe/241/\"></a></div>",
+        "<a href=\"/us/mrecipe/241/\"><b><span></span>Black Stone</b></a>",
+        "Grinding",
+        {"sort_value": 0},
+        "",
+        "<div class=\"iconset_wrapper_medium inlinediv\"><a data-id=\"item--4998\"><div class=\"quantity_small nowrap\">2</div></a></div>",
+        "1.50",
+        "<div class=\"iconset_wrapper_medium inlinediv\"><a data-id=\"item--16001\"><div class=\"quantity_small nowrap\">5</div></a></div>",
+        "[4998]",
+        "[]",
+        7,
+        0,
+    ]
+
+    with patch(
+        "bdo_profit.scraper.bdocodex.fetch_mrecipes_json",
+        return_value=[bad_row],
+    ), patch(
+        "bdo_profit.scraper.bdocodex.PROCESS_TYPES", {"grind": "Grinding"}
+    ), patch("time.sleep", return_value=None):
+        edges = scrape_processing_recipes(MagicMock())
+
+    assert edges == []
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "241" in out
+
+
 def test_scrape_processing_recipes_skips_malformed_row_with_warning(capsys):
     from unittest.mock import MagicMock, patch
     from bdo_profit.scraper.bdocodex import scrape_processing_recipes

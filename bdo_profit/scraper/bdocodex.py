@@ -18,6 +18,24 @@ PROCESS_TYPES = {
     "malchemy": "Simple Alchemy",
 }
 
+# mrecipe ids verified, by hand, against the live bdocodex.com page, to carry
+# a quantity ratio that's almost certainly a data entry error on bdocodex's
+# side (not a scraping issue on ours) -- left in, these create a genuine
+# positive-gain cycle with no fixed point once combined with another real
+# recipe elsewhere in the graph, which produced an actual 6.57e94-silver
+# result on live data. Excluded rather than "corrected", since guessing the
+# right ratio risks introducing a different wrong number with more
+# confidence, not less.
+KNOWN_BAD_MRECIPE_IDS: dict[int, str] = {
+    241: (
+        "Grinding: Black Stone lists 2x Sharp Black Crystal Shard -> 5x "
+        "Black Stone -- backwards from how grinding/refining normally "
+        "works (should consume more than it yields of a higher tier, not "
+        "less); combined with mrecipe 2382 (needs 1x Black Stone as an "
+        "ingredient to make Shards) this closes a ~25x-per-cycle loop."
+    ),
+}
+
 def fetch_mrecipes_json(process_slug: str, session: requests.Session) -> list[list]:
     resp = session.get(
         f"{BASE_URL}/query.php",
@@ -126,10 +144,16 @@ def scrape_processing_recipes(session: requests.Session) -> list[ConversionEdge]
     for slug in PROCESS_TYPES:
         rows = fetch_mrecipes_json(slug, session)
         for row in rows:
+            recipe_id = row[0] if row else None
+            if recipe_id in KNOWN_BAD_MRECIPE_IDS:
+                print(
+                    f"  WARNING: skipped {slug} recipe {recipe_id} "
+                    f"(known bad data): {KNOWN_BAD_MRECIPE_IDS[recipe_id]}"
+                )
+                continue
             try:
                 edges.append(parse_mrecipe_row(row))
             except (AttributeError, IndexError, KeyError, ValueError) as exc:
-                recipe_id = row[0] if row else "?"
                 print(f"  WARNING: skipped {slug} recipe {recipe_id}: {exc}")
         time.sleep(0.5)
     return edges
