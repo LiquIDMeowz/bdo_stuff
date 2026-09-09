@@ -240,6 +240,16 @@ def test_acquisition_cost_falls_back_to_whichever_exists():
     assert acquisition_cost(1, {}, {1: 50.0}) == 50.0
 
 
+def test_acquisition_cost_treats_zero_market_price_as_unavailable():
+    # The market API returns 0 when an item has no current sell listings --
+    # confirmed on real data (Guild Ocean Stalker's Skin, item 9981) that
+    # this was being read as "free to acquire", silently inflating any
+    # recipe using it. A market price of 0 must not be treated as a real,
+    # cheaper-than-NPC acquisition option.
+    assert acquisition_cost(1, {1: 0.0}, {}) == float("inf")
+    assert acquisition_cost(1, {1: 0.0}, {1: 700.0}) == 700.0
+
+
 def test_sell_raw_when_no_processing_beats_selling():
     edges_by_input = build_edges_by_input([])
     prices = {1: 100.0}

@@ -91,8 +91,19 @@ def category_reachable_items(
 def acquisition_cost(
     item_id: int, prices: dict[int, float], npc_prices: dict[int, float]
 ) -> float:
+    """Cheapest way to acquire one unit of ``item_id``, market or NPC.
+
+    A market price of exactly 0 means the item currently has no active
+    sell listings (confirmed on real data), not that it's free -- treating
+    it as a real, cheaper-than-NPC price silently inflated any recipe that
+    happened to use an out-of-stock ingredient. NPC prices are hand-entered
+    real purchase costs, so they aren't filtered the same way.
+    """
+    market_price = prices.get(item_id)
     candidates = [
-        c for c in (prices.get(item_id), npc_prices.get(item_id)) if c is not None
+        c
+        for c in (market_price if market_price else None, npc_prices.get(item_id))
+        if c is not None
     ]
     return min(candidates) if candidates else float("inf")
 
