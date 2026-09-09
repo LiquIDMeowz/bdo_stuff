@@ -7,14 +7,17 @@ from bdo_profit import cache, config, price_cache
 from bdo_profit.explain import ExplainResult, build_explain
 from bdo_profit.market_client import MarketClient
 from bdo_profit.profitability import (
+    AcquisitionOption,
     AcquisitionPlan,
     PathResult,
     all_item_ids,
     apply_bonus_rate_overrides,
     best_path_value,
     build_edges_by_input,
+    build_edges_by_output,
     category_reachable_items,
     identify_raw_materials,
+    rank_acquisition_sources,
 )
 from bdo_profit.scraper.bdocodex import scrape_all
 
@@ -93,6 +96,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Quantity of --explain's item you're starting with (default 1)",
     )
+    parser.add_argument(
+        "--sources",
+        type=int,
+        default=None,
+        metavar="ITEM_ID",
+        help="List every way to acquire one item -- buy direct, or via each "
+        "recipe that produces it -- sorted by real cost per unit, instead of "
+        "silently picking one. Useful when an item has many alternative "
+        "recipes (e.g. Trace of Nature has 262) and you want to see the "
+        "whole landscape, not just whichever one the algorithm chose.",
+    )
+    parser.add_argument(
+        "--sources-limit",
+        type=int,
+        default=20,
+        help="Max number of --sources options to print (default 20)",
+    )
     return parser
 
 
@@ -112,10 +132,12 @@ def main(argv: list[str] | None = None) -> None:
     raw_material_ids = identify_raw_materials(edges)
     edges_by_input = build_edges_by_input(edges)
 
-    if args.category == "all" or args.explain is not None:
+    if args.category == "all" or args.explain is not None or args.sources is not None:
         # --explain's ingredient tree can reach into any corner of the graph
         # (side ingredients, their own sub-ingredients...) that a --category
-        # hop bound would miss, so it always prices the whole graph.
+        # hop bound would miss, so it always prices the whole graph. --sources
+        # needs the same -- an item's alternative recipes can pull in catalyst
+        # items from anywhere.
         wanted_ids = all_item_ids(edges)
     else:
         hop_bound = None if args.category_hops < 0 else args.category_hops
@@ -179,6 +201,20 @@ def main(argv: list[str] | None = None) -> None:
         _print_explain(explain_result, names)
         return
 
+    if args.sources is not None:
+        excluded: set = set()
+        memo_sources: dict[int, PathResult] = {}
+        best_path_value(
+            args.sources, edges_by_input, prices, npc_prices, args.tax_rate, memo_sources,
+            excluded_edges_out=excluded, stocks=stocks,
+        )
+        edges_by_output = build_edges_by_output(edges)
+        options = rank_acquisition_sources(
+            args.sources, edges_by_output, prices, npc_prices, stocks, frozenset(excluded)
+        )
+        _print_sources(args.sources, options, names, stocks, args.sources_limit)
+        return
+
     memo: dict[int, PathResult] = {}
     results = [
         best_path_value(item_id, edges_by_input, prices, npc_prices, args.tax_rate, memo, stocks=stocks)
@@ -201,6 +237,44 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.csv:
         _write_csv(results, names, stocks, trades, args.csv)
+
+
+def _print_sources(
+    item_id: int,
+    options: list[AcquisitionOption],
+    names: dict[int, str],
+    stocks: dict[int, float],
+    limit: int,
+) -> None:
+    def name(iid: int) -> str:
+        return names.get(iid, f"Item {iid}")
+
+    def input_note(iid: int, qty: float) -> str:
+        stock = stocks.get(iid)
+        stock_note = f", stock {stock:,.0f}" if stock is not None else ""
+        return f"{qty:,.0f}x {name(iid)}{stock_note}"
+
+    print(f"=== Sources for {name(item_id)} (id {item_id}) ===")
+    if not options:
+        print("No buyable or craftable source found.")
+        return
+    shown = options[:limit]
+    for i, opt in enumerate(shown, start=1):
+        if opt.method == "buy_market":
+            stock_note = f", stock {opt.available_stock:,.0f}" if opt.available_stock is not None else ""
+            print(f"{i}. BUY (market): {opt.unit_cost:,.0f}/unit{stock_note}")
+        elif opt.method == "buy_npc":
+            print(f"{i}. BUY (NPC): {opt.unit_cost:,.0f}/unit")
+        else:
+            inputs_str = ", ".join(input_note(iid, qty) for iid, qty in opt.inputs)
+            print(
+                f"{i}. CRAFT via {opt.recipe_name} ({opt.process_type}): "
+                f"{opt.unit_cost:,.0f}/unit avg  [worst case yield {opt.yield_min:,.0f}, "
+                f"avg {opt.yield_expected:,.1f}]"
+            )
+            print(f"     needs: {inputs_str}")
+    if len(options) > limit:
+        print(f"... and {len(options) - limit} more option(s) not shown (--sources-limit to see more)")
 
 
 def _print_explain(result: ExplainResult, names: dict[int, str]) -> None:

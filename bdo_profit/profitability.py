@@ -251,6 +251,90 @@ def cheapest_acquisition_plan(
     return best_plan
 
 
+@dataclass
+class AcquisitionOption:
+    """One way to get one unit of an item -- buy it, or make it via one
+    specific recipe. Unlike ``AcquisitionPlan``, this never recurses into
+    sub-ingredients and never picks a single "best" -- it's meant to show
+    the full landscape of options side by side."""
+
+    method: str  # "buy_market", "buy_npc", or "craft"
+    unit_cost: float
+    recipe_name: str | None = None
+    process_type: str | None = None
+    recipe_id: int | None = None
+    yield_expected: float | None = None
+    yield_min: float | None = None
+    available_stock: float | None = None
+    inputs: tuple[tuple[int, float], ...] = ()
+
+
+def rank_acquisition_sources(
+    item_id: int,
+    edges_by_output: dict[int, list[ConversionEdge]],
+    prices: dict[int, float],
+    npc_prices: dict[int, float],
+    stocks: dict[int, float],
+    excluded_edges: frozenset[ConversionEdge] = frozenset(),
+) -> list[AcquisitionOption]:
+    """Every way to acquire one unit of ``item_id`` -- buy direct (market or
+    NPC), or via each recipe that produces it -- sorted cheapest first.
+
+    Confirmed valuable by the user: ``cheapest_acquisition_plan`` silently
+    picks one winner, but when an item has hundreds of alternative recipes
+    (Trace of Nature: 262, each keyed off a different specific rare
+    catalyst) it's worth seeing the whole landscape rather than trusting
+    whichever one the algorithm landed on -- especially since "cheapest"
+    and "actually achievable at your scale" aren't always the same recipe.
+
+    Ingredient costs for craft options use ``acquisition_cost`` directly
+    (one level, not recursive craft optimization) -- this ranks sources
+    for ``item_id`` itself, not the cheapest way to make every ingredient
+    those sources need too.
+    """
+    options: list[AcquisitionOption] = []
+
+    market_price = prices.get(item_id)
+    if market_price:
+        options.append(
+            AcquisitionOption(
+                method="buy_market",
+                unit_cost=market_price,
+                available_stock=stocks.get(item_id),
+            )
+        )
+    npc_price = npc_prices.get(item_id)
+    if npc_price is not None:
+        options.append(AcquisitionOption(method="buy_npc", unit_cost=npc_price))
+
+    for edge in edges_by_output.get(item_id, []):
+        if edge in excluded_edges:
+            continue
+        out = next((o for o in edge.base_outputs if o.item_id == item_id), None)
+        if out is None or out.expected_qty <= 0:
+            continue
+        other_cost = sum(
+            acquisition_cost(iid, prices, npc_prices, stocks) * qty for iid, qty in edge.inputs
+        )
+        if other_cost == float("inf"):
+            continue
+        options.append(
+            AcquisitionOption(
+                method="craft",
+                unit_cost=other_cost / out.expected_qty,
+                recipe_name=edge.name,
+                process_type=edge.process_type,
+                recipe_id=edge.recipe_id,
+                yield_expected=out.expected_qty,
+                yield_min=out.qty_min,
+                inputs=edge.inputs,
+            )
+        )
+
+    options.sort(key=lambda o: o.unit_cost)
+    return options
+
+
 def apply_bonus_rate_overrides(
     edges: list[ConversionEdge], rates: dict[int, float]
 ) -> list[ConversionEdge]:
