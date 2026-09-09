@@ -1,5 +1,9 @@
 from bdo_profit.models import ConversionEdge, YieldRange
-from bdo_profit.profitability import build_edges_by_output, cheapest_acquisition_plan
+from bdo_profit.profitability import (
+    build_edges_by_output,
+    cheapest_acquisition_plan,
+    rank_acquisition_sources,
+)
 
 # Toy: item 100 can be bought for 500, or crafted from 2x item 101 (bought at 100 each = 200)
 # yielding 2 units per batch -- craft cost = 200/2 = 100/unit, way cheaper than buying at 500.
@@ -143,3 +147,46 @@ def test_excluded_edges_are_skipped():
     )
     assert plan.method == "buy_market"
     assert plan.unit_cost == 500.0
+
+
+# item 400 has three real ways to get it: buy at 500, craft cheaply from
+# item 401 (100/unit), or an NPC price of 300 -- used to test that
+# rank_acquisition_sources surfaces ALL of them, sorted, rather than
+# silently picking one winner like cheapest_acquisition_plan does.
+CRAFT_400_FROM_401 = ConversionEdge(
+    10, "Craft400", "Heating", 0, ((401, 2.0),), (YieldRange(400, 2.0, 2.0),)
+)
+CRAFT_400_EXPENSIVE = ConversionEdge(
+    11, "ExpensiveCraft400", "Alchemy", 0, ((402, 1.0),), (YieldRange(400, 1.0, 1.0),)
+)
+
+
+def test_rank_acquisition_sources_lists_every_option_sorted_by_cost():
+    edges_by_output = build_edges_by_output([CRAFT_400_FROM_401, CRAFT_400_EXPENSIVE])
+    prices = {400: 500.0, 401: 100.0, 402: 900.0}
+    npc_prices = {400: 300.0}
+    options = rank_acquisition_sources(400, edges_by_output, prices, npc_prices, {})
+
+    assert [o.method for o in options] == ["craft", "buy_npc", "buy_market", "craft"]
+    assert options[0].unit_cost == 100.0  # 2x401@100 / 2 yield = 100/unit
+    assert options[0].recipe_name == "Craft400"
+    assert options[1].unit_cost == 300.0  # NPC
+    assert options[2].unit_cost == 500.0  # market
+    assert options[3].unit_cost == 900.0  # ExpensiveCraft400: 1x402@900 / 1 yield
+
+
+def test_rank_acquisition_sources_attaches_stock_to_buy_market():
+    edges_by_output = build_edges_by_output([])
+    options = rank_acquisition_sources(500, edges_by_output, {500: 1000.0}, {}, {500: 42})
+    assert len(options) == 1
+    assert options[0].method == "buy_market"
+    assert options[0].available_stock == 42
+
+
+def test_rank_acquisition_sources_skips_excluded_edges():
+    edges_by_output = build_edges_by_output([CRAFT_400_FROM_401])
+    prices = {400: 500.0, 401: 100.0}
+    options = rank_acquisition_sources(
+        400, edges_by_output, prices, {}, {}, excluded_edges=frozenset([CRAFT_400_FROM_401])
+    )
+    assert [o.method for o in options] == ["buy_market"]

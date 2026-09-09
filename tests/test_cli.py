@@ -118,6 +118,50 @@ def test_sell_raw_result_survives_category_filter(tmp_path: Path, capsys):
     assert "sell_raw" in csv_text
 
 
+def test_sources_lists_every_acquisition_option_sorted_by_cost(tmp_path: Path, capsys):
+    # Confirmed valuable by the user: an item with several alternative
+    # recipes should show the whole landscape, not just one silently
+    # chosen winner.
+    paths = _common_paths(tmp_path)
+    edges = [
+        ConversionEdge(
+            recipe_id=1,
+            name="CraftTraceA",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((9001, 1.0),),
+            base_outputs=(YieldRange(5960, 1.0, 4.0),),
+        ),
+        ConversionEdge(
+            recipe_id=2,
+            name="CraftTraceB",
+            process_type="Heating",
+            mastery_required=0,
+            inputs=((9002, 1.0),),
+            base_outputs=(YieldRange(5960, 1.0, 1.0),),
+        ),
+    ]
+    fake_prices = {
+        5960: _snapshot(5960, "Trace of Nature", 247000.0, current_stock=47060),
+        9001: _snapshot(9001, "Cheap Catalyst", 186000.0, current_stock=18),
+        9002: _snapshot(9002, "Pricier Catalyst", 900000.0, current_stock=100),
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        _run(paths, ["--sources", "5960"])
+
+    out = capsys.readouterr().out
+    assert "Sources for Trace of Nature" in out
+    assert "CraftTraceA" in out
+    assert "CraftTraceB" in out
+    assert "BUY (market)" in out
+    # Cheapest (CraftTraceA, avg 2.5 yield from a 186k catalyst = ~74.4k/unit)
+    # must be listed before the more expensive options.
+    assert out.index("CraftTraceA") < out.index("CraftTraceB")
+    assert out.index("CraftTraceA") < out.index("BUY (market)")
+
+
 def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: Path, capsys):
     paths = _common_paths(tmp_path)
     edges = [
