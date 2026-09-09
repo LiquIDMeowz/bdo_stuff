@@ -36,7 +36,11 @@ class ExplainResult:
 # needed 833+) that a nonzero-but-nowhere-near-enough stock is just as
 # unachievable as literal zero, not merely worth a warning.
 STOCK_INSUFFICIENCY_THRESHOLD = 10.0
-MAX_STOCK_RETRIES = 8
+# Some items (e.g. Trace of Nature) have hundreds of alternative recipes, each
+# keyed off a different specific rare catalyst -- confirmed on real data (262
+# recipes for one item) that 8 rounds isn't enough to cycle through enough of
+# them to land on something actually achievable.
+MAX_STOCK_RETRIES = 300
 
 
 def _find_understocked_items(
