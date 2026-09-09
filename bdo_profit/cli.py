@@ -28,6 +28,10 @@ DEFAULT_BONUS_PATH = Path("config/bonus_proc_rates.yaml")
 DEFAULT_NPC_PATH = Path("data/npc_prices.json")
 DEFAULT_PRICE_CACHE_PATH = Path("data/price_cache.json")
 DEFAULT_PRICE_CACHE_TTL = 302400.0  # 3.5 days -- most item prices barely move week to week
+# 0.65 (35% base tax) * 1.30 (Value Pack bonus) = 0.845, + 0.005 current family fame bonus.
+# Family fame bonus grows over time (up to +0.015 at 1.5%) -- bump this as it does, or pass
+# --tax-rate explicitly. Doesn't apply to Pearl-shop items (flat 30% tax, no VP bonus there).
+DEFAULT_TAX_RATE = 0.85
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -38,7 +42,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top", type=int, default=20)
     parser.add_argument("--refresh-recipes", action="store_true")
     parser.add_argument("--csv", type=Path, default=None)
-    parser.add_argument("--tax-rate", type=float, default=0.65)
+    parser.add_argument(
+        "--tax-rate",
+        type=float,
+        default=DEFAULT_TAX_RATE,
+        help="Fraction of sale price kept after Central Market tax (default 0.85 = "
+        "Value Pack + current family fame; use 0.65 for no Value Pack)",
+    )
     parser.add_argument("--cache-path", type=Path, default=DEFAULT_CACHE_PATH)
     parser.add_argument("--bonus-rates-path", type=Path, default=DEFAULT_BONUS_PATH)
     parser.add_argument("--npc-prices-path", type=Path, default=DEFAULT_NPC_PATH)
