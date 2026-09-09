@@ -290,8 +290,15 @@ def build_explain(
     # correct starting point instead of the first round's stale plans.
     acq_memo.update(acq_memo_round)
 
-    processed_total = result.value_per_unit * qty
     stop_points = _compute_stop_points(tuple(steps), item_id, qty, prices, tax_rate)
+    # Uses stop_points' own average, not result.value_per_unit * qty: the
+    # forward solver prices side ingredients at flat market cost (it never
+    # recursively checks whether crafting one is cheaper), while
+    # cheapest_acquisition_plan (which built each step's side_ingredients)
+    # does. Mixing the two would make worst_case_total look like it can
+    # exceed processed_total, which isn't a real risk -- both figures need
+    # to share the same sourcing basis to be comparable at all.
+    processed_total = stop_points[-1].value_avg
     worst_case_total = stop_points[-1].value_worst
     recommended = _recommend_stop_point(stop_points)
     bonus_upside_total = result.bonus_upside_per_unit * qty
