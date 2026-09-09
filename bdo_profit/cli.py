@@ -151,6 +151,7 @@ def main(argv: list[str] | None = None) -> None:
 
     raw_material_ids = identify_raw_materials(edges)
     edges_by_input = build_edges_by_input(edges)
+    edges_by_output = build_edges_by_output(edges)
 
     if args.category == "all" or args.explain is not None or args.sources is not None:
         # --explain's ingredient tree can reach into any corner of the graph
@@ -215,7 +216,7 @@ def main(argv: list[str] | None = None) -> None:
     price_cache.save_price_cache(disk_price_cache, args.price_cache_path)
 
     npc_prices = inject_universal_proc_costs(
-        universal_procs, edges, prices, npc_prices, args.tax_rate, stocks=stocks
+        universal_procs, edges, edges_by_output, prices, npc_prices, args.tax_rate, stocks=stocks
     )
 
     if args.explain is not None:
@@ -232,12 +233,11 @@ def main(argv: list[str] | None = None) -> None:
             args.sources, edges_by_input, prices, npc_prices, args.tax_rate, memo_sources,
             excluded_edges_out=excluded, stocks=stocks,
         )
-        edges_by_output = build_edges_by_output(edges)
         options = rank_acquisition_sources(
             args.sources, edges_by_output, prices, npc_prices, stocks, frozenset(excluded)
         )
         farming_hints = _build_farming_hints(
-            universal_procs, edges, prices, npc_prices, args.tax_rate, stocks
+            universal_procs, edges, edges_by_output, prices, npc_prices, args.tax_rate, stocks
         )
         _print_sources(args.sources, options, names, stocks, args.sources_limit, farming_hints)
         return
@@ -269,6 +269,7 @@ def main(argv: list[str] | None = None) -> None:
 def _build_farming_hints(
     universal_procs: dict[str, config.UniversalProc],
     edges: list,
+    edges_by_output: dict,
     prices: dict[int, float],
     npc_prices: dict[int, float],
     tax_rate: float,
@@ -280,7 +281,7 @@ def _build_farming_hints(
     hints: dict[int, str] = {}
     for process_type, proc in universal_procs.items():
         found = find_cheapest_farming_action(
-            process_type, edges, prices, npc_prices, tax_rate, stocks
+            process_type, edges, edges_by_output, prices, npc_prices, tax_rate, stocks
         )
         if found is None:
             continue

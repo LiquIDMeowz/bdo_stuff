@@ -1,16 +1,18 @@
 from bdo_profit.config import UniversalProc
 from bdo_profit.models import ConversionEdge
-from bdo_profit.profitability import acquisition_cost
+from bdo_profit.profitability import AcquisitionPlan, cheapest_acquisition_plan
 
 
 def find_cheapest_farming_action(
     process_type: str,
     edges: list[ConversionEdge],
+    edges_by_output: dict[int, list[ConversionEdge]],
     prices: dict[int, float],
     npc_prices: dict[int, float],
     tax_rate: float,
     stocks: dict[int, float] | None = None,
     excluded_edges: frozenset[ConversionEdge] = frozenset(),
+    acq_memo: dict[int, AcquisitionPlan] | None = None,
 ) -> tuple[ConversionEdge, float] | None:
     """Cheapest recipe of ``process_type`` to run purely to trigger a
     universal per-action proc (e.g. Cooking's ~2% Witch's Delicacy chance)
@@ -20,16 +22,33 @@ def find_cheapest_farming_action(
     recovered by also selling the recipe's own output (taxed). A negative
     net cost means the recipe is worth running outright, so farming the
     proc through it is free (or better).
+
+    Ingredient costs use ``cheapest_acquisition_plan`` (buy OR craft,
+    whichever is cheaper, recursively) rather than a flat buy price --
+    confirmed by the user with a real example (Lump of Raw Sugar: ~200/unit
+    crafted from NPC-priced Raw Sugar + Mineral Water vs. 8,250 to buy on
+    the market) that pricing an ingredient as "buy only" can badly
+    understate a recipe's real profitability.
     """
+    if acq_memo is None:
+        acq_memo = {}
+    stocks = stocks or {}
     best: tuple[ConversionEdge, float] | None = None
     for edge in edges:
         if edge.process_type != process_type or edge in excluded_edges:
             continue
-        input_cost = sum(
-            acquisition_cost(iid, prices, npc_prices, stocks) * qty
-            for iid, qty in edge.inputs
-        )
-        if input_cost == float("inf"):
+        input_cost = 0.0
+        unavailable = False
+        for iid, qty in edge.inputs:
+            plan = cheapest_acquisition_plan(
+                iid, edges_by_output, prices, npc_prices, acq_memo,
+                excluded_edges=excluded_edges, stocks=stocks,
+            )
+            if plan.unit_cost == float("inf"):
+                unavailable = True
+                break
+            input_cost += plan.unit_cost * qty
+        if unavailable:
             continue
         output_value = sum(
             out.expected_qty * prices.get(out.item_id, 0.0) * tax_rate
@@ -46,11 +65,13 @@ def universal_proc_farming_cost(
     chance: float,
     qty_per_proc: float,
     edges: list[ConversionEdge],
+    edges_by_output: dict[int, list[ConversionEdge]],
     prices: dict[int, float],
     npc_prices: dict[int, float],
     tax_rate: float,
     stocks: dict[int, float] | None = None,
     excluded_edges: frozenset[ConversionEdge] = frozenset(),
+    acq_memo: dict[int, AcquisitionPlan] | None = None,
 ) -> float | None:
     """Expected silver cost per unit of a universal-proc item, farmed by
     repeating the cheapest matching-``process_type`` recipe until it procs.
@@ -58,7 +79,8 @@ def universal_proc_farming_cost(
     Returns ``None`` when no recipe of that process_type is farmable at all.
     """
     found = find_cheapest_farming_action(
-        process_type, edges, prices, npc_prices, tax_rate, stocks, excluded_edges
+        process_type, edges, edges_by_output, prices, npc_prices, tax_rate,
+        stocks, excluded_edges, acq_memo,
     )
     if found is None:
         return None
@@ -72,6 +94,7 @@ def universal_proc_farming_cost(
 def inject_universal_proc_costs(
     universal_procs: dict[str, UniversalProc],
     edges: list[ConversionEdge],
+    edges_by_output: dict[int, list[ConversionEdge]],
     prices: dict[int, float],
     npc_prices: dict[int, float],
     tax_rate: float,
@@ -92,12 +115,13 @@ def inject_universal_proc_costs(
     hand-configured real price always wins over a computed one.
     """
     updated = dict(npc_prices)
+    acq_memo: dict[int, AcquisitionPlan] = {}
     for process_type, proc in universal_procs.items():
         if proc.item_id in updated:
             continue
         cost = universal_proc_farming_cost(
-            process_type, proc.chance, proc.qty, edges, prices, npc_prices,
-            tax_rate, stocks, excluded_edges,
+            process_type, proc.chance, proc.qty, edges, edges_by_output,
+            prices, npc_prices, tax_rate, stocks, excluded_edges, acq_memo,
         )
         if cost is not None:
             updated[proc.item_id] = cost
