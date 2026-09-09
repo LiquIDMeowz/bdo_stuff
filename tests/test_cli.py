@@ -200,6 +200,44 @@ def test_explain_prints_full_step_by_step_tree_with_side_ingredients(tmp_path: P
     assert "Flux" in out  # side ingredient shown, not just the main chain
 
 
+def test_explain_recommends_stopping_before_a_risky_step(tmp_path: Path, capsys):
+    # Confirmed valuable by the user with a real example (Copper Ore): the
+    # first two steps are safe ore smelting with no side ingredients, the
+    # third pulls in an expensive, thin-margin ingredient. The tool should
+    # recommend stopping before the risky step, not just warn about it.
+    paths = _common_paths(tmp_path)
+    edges = [
+        ConversionEdge(
+            recipe_id=70, name="MakeShard", process_type="Heating", mastery_required=0,
+            inputs=((1, 5.0),), base_outputs=(YieldRange(2, 2.0, 2.0),),
+        ),
+        ConversionEdge(
+            recipe_id=71, name="MakeIngot", process_type="Heating", mastery_required=0,
+            inputs=((2, 3.0),), base_outputs=(YieldRange(3, 1.0, 1.0),),
+        ),
+        ConversionEdge(
+            recipe_id=72, name="MakeCrystal", process_type="Alchemy", mastery_required=0,
+            inputs=((3, 1.0), (10, 2.0)), base_outputs=(YieldRange(4, 1.0, 2.0),),
+        ),
+    ]
+    fake_prices = {
+        1: _snapshot(1, "Copper Ore", 10.0),
+        2: _snapshot(2, "Melted Copper Shard", 100.0),
+        3: _snapshot(3, "Copper Ingot", 1000.0),
+        4: _snapshot(4, "Pure Copper Crystal", 1600.0),
+        10: _snapshot(10, "Metal Solvent", 500.0, current_stock=50000),
+    }
+
+    with patch("bdo_profit.cli.MarketClient", _fake_client(fake_prices)), \
+         patch("bdo_profit.cli.scrape_all", return_value=edges):
+        _run(paths, ["--explain", "1", "--qty", "15"])
+
+    out = capsys.readouterr().out
+    assert "RECOMMENDED: stop after step 2" in out
+    assert "Copper Ingot" in out
+    assert "BEYOND RECOMMENDED STOP" in out
+
+
 def test_explain_excludes_a_chain_that_needs_a_zero_stock_ingredient(tmp_path: Path, capsys):
     # Confirmed by the user: an ingredient with zero current sell listings
     # (e.g. Bottle of Sea Water -- trivially self-gatherable, nobody bothers

@@ -283,13 +283,12 @@ def _print_explain(result: ExplainResult, names: dict[int, str]) -> None:
 
     print(f"=== {name(result.item_id)} (id {result.item_id}) x {result.qty:,.1f} ===")
     print(f"Raw sell (net of tax):       {result.raw_sell_total:,.0f}")
-    print(f"Processed (net of tax):      {result.processed_total:,.0f}  (average yield)")
-    print(f"Worst case (min yield):      {result.worst_case_total:,.0f}")
+    print(f"Processed (net of tax):      {result.processed_total:,.0f}  (average yield, full chain)")
+    print(f"Worst case (min yield):      {result.worst_case_total:,.0f}  (full chain)")
     if result.steps and result.worst_case_total < result.raw_sell_total:
         print(
-            "  ^ WARNING: at minimum yield, processing is worse than just selling raw -- "
-            "this chain is only profitable if you're consistently getting better than the "
-            "worst end of the yield range."
+            "  ^ WARNING: at minimum yield, the full chain is worse than just selling raw -- "
+            "see the recommended stopping point below."
         )
     if result.bonus_upside_total:
         print(f"Untracked bonus upside:     +{result.bonus_upside_total:,.0f} (unknown proc rate)")
@@ -298,11 +297,26 @@ def _print_explain(result: ExplainResult, names: dict[int, str]) -> None:
         print("\nBest option: sell raw -- no processing chain beats the raw sale price.")
         return
 
+    if result.recommended_stop_index < len(result.steps) - 1:
+        stop_name = (
+            name(result.item_id) if result.recommended_stop_index == -1
+            else name(result.steps[result.recommended_stop_index].edge.base_outputs[0].item_id)
+        )
+        print(
+            f"\nRECOMMENDED: stop after step {result.recommended_stop_index + 1} and sell "
+            f"{stop_name} -- {result.recommended_stop_value:,.0f} guaranteed, without risking "
+            f"the thinner-margin step(s) below it."
+        )
+    else:
+        print(f"\nRECOMMENDED: the full chain is safe -- worst case still beats raw ({result.worst_case_total:,.0f} vs {result.raw_sell_total:,.0f}).")
+
     print()
     for i, step in enumerate(result.steps, start=1):
+        beyond = i - 1 > result.recommended_stop_index
+        tag = "  [BEYOND RECOMMENDED STOP -- optional, riskier]" if beyond else ""
         print(
             f"Step {i}: {step.edge.name} ({step.edge.process_type}) "
-            f"-- {step.batches:,.1f} batch(es)"
+            f"-- {step.batches:,.1f} batch(es){tag}"
         )
         print(f"  Consumes: {step.primary_input_qty:,.1f} x {name(_spine_input(step))}")
         primary_out = step.edge.base_outputs[0]
